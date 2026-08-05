@@ -48,6 +48,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+try:  # Optional dependency: the Windows-only registry module.
+    import winreg
+except ImportError:  # pragma: no cover - exercised on POSIX, where it is absent
+    winreg = None  # type: ignore[assignment]
+
 from aiohttp import web
 
 from kiro_crew import frontend, hooks, platform_compat
@@ -723,6 +728,141 @@ _SANDBOX_ERR_MAX = 900
 _GIT_ERR_MAX = 300
 
 
+# ─── Windows registry-based binary discovery ───
+# Maps tool names to (HKLM registry key, value name, subdirectory) tuples.
+# These registry entries are written by official installers and live in the
+# MACHINE hive (HKLM), which requires admin to write — not agent-writable.
+_WIN_REGISTRY_HINTS: dict[str, list[tuple[str, str, str]]] = {
+    "git": [
+        (r"SOFTWARE\GitForWindows", "InstallPath", "cmd"),
+        (r"SOFTWARE\GitForWindows", "InstallPath", "bin"),
+    ],
+    "gh": [
+        (r"SOFTWARE\GitHub CLI", "InstallPath", ""),
+    ],
+}
+
+
+def _agent_can_replace(path: Path) -> bool:
+    """True when THIS process could swap out *path*, directly or via a parent.
+
+    ``os.access(W_OK)`` cannot answer this on Windows: it reports the read-only
+    ATTRIBUTE and ignores the DACL entirely. So ask the filesystem instead of
+    inferring — open the target for writing, and try to create a file in its
+    directory. The directory matters on its own: delete-and-replace needs no
+    write bit on the binary.
+
+    Scope is the file and its immediate directory, which is the standard
+    ``_trusted_bin`` already holds ``/usr/bin`` to (it checks the resolved file,
+    not the chain above it). A writable grandparent is a real but PRE-EXISTING
+    gap shared with the POSIX branch, tracked separately rather than fixed only
+    here.
+
+    Fails CLOSED: anything unexpected counts as replaceable, so a probe we
+    cannot interpret withholds trust rather than granting it.
+    """
+    try:
+        # Writable target? O_WRONLY alone never truncates, so this asks a
+        # permission question without modifying anything.
+        try:
+            fd = os.open(path, os.O_WRONLY)
+        except OSError:
+            pass  # Not writable by us — now check the directory.
+        else:
+            os.close(fd)
+            return True
+
+        # Creatable in its directory? Then we can delete and substitute.
+        probe_at = path.parent / f".kirocrew-write-probe-{uuid.uuid4().hex}"
+        try:
+            fd = os.open(probe_at, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return True  # Astronomically unlikely; treat as untrusted.
+        except OSError:
+            return False  # Cannot create here — the install is not ours to edit.
+        os.close(fd)
+        try:
+            os.unlink(probe_at)
+        except OSError:
+            logger.warning("dev-fleet: left a write probe behind at %s", probe_at)
+        return True
+    except Exception:  # pragma: no cover - defensive: never trust on confusion
+        return True
+
+
+def _win_registry_bin(name: str) -> str | None:
+    """Resolve *name* via HKLM registry keys written by official installers.
+
+    The hive gets us a CANDIDATE, not trust: writing under HKEY_LOCAL_MACHINE
+    requires admin, so an inherited PATH entry cannot forge the hint. Trust is
+    then earned per candidate — it must exist, be executable, be an ABSOLUTE
+    path, sit outside $HOME, and be unreplaceable by this process (see
+    ``_agent_can_replace``). Returns the first candidate that clears all of
+    that, else None.
+
+    Scope: the probe answers "can WE swap this out", which is the invariant
+    ``_trusted_bin`` states. It is not a full DACL audit — a second local admin
+    could still poison the install — so this closes the agent-writable vector,
+    not every principal on the host.
+    """
+    if winreg is None:
+        return None
+    hints = _WIN_REGISTRY_HINTS.get(name)
+    if not hints:
+        return None
+    suffixes = (".exe", ".cmd", "")
+    # Windows paths are case-insensitive, so the $HOME guard below has to
+    # compare case-folded — otherwise `D:\Users\me` slips past a home
+    # recorded as `d:\users\me`.
+    home_prefix = os.path.normcase(str(Path.home().resolve()) + os.sep)
+    for reg_key, reg_value, subdir in hints:
+        for hive_flag in (winreg.KEY_READ | winreg.KEY_WOW64_64KEY,  # type: ignore[attr-defined]
+                          winreg.KEY_READ | winreg.KEY_WOW64_32KEY):  # type: ignore[attr-defined]
+            try:
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, reg_key, 0, hive_flag) as key:  # type: ignore[attr-defined]
+                    install_path, _ = winreg.QueryValueEx(key, reg_value)  # type: ignore[attr-defined]
+            except OSError:
+                continue
+            # A hostile or merely broken value must not become a relative
+            # path: `Path("")` is `.`, which would resolve the candidate
+            # against the CWD — agent-writable, the exact vector _trusted_bin
+            # exists to close. REG_DWORD and friends are rejected outright.
+            if not isinstance(install_path, str) or not install_path.strip():
+                continue
+            base = Path(install_path.strip())
+            if not base.is_absolute():
+                continue
+            if subdir:
+                base = base / subdir
+            for suffix in suffixes:
+                cand = base / (name + suffix)
+                try:
+                    if not (cand.is_file() and os.access(cand, os.X_OK)):
+                        continue
+                    real = cand.resolve()
+                    # Reject if under the user's home (same guard as the main
+                    # loop): a per-user install is user-writable, so it carries
+                    # none of the HKLM attestation this path relies on.
+                    if os.path.normcase(str(real)).startswith(home_prefix):
+                        continue
+                    # HKLM says an admin REGISTERED this path; it says nothing
+                    # about who can write it. A custom install (D:\software\Git)
+                    # can carry permissive ACLs, so verify we cannot replace the
+                    # binary before handing it the credential-bearing tier.
+                    if _agent_can_replace(real):
+                        logger.warning(
+                            "dev-fleet: ignoring registry-discovered %s at %s — "
+                            "this process can replace it",
+                            name,
+                            real,
+                        )
+                        continue
+                    return str(real)
+                except OSError:
+                    continue
+    return None
+
+
 def _trusted_bin(name: str) -> str | None:
     """Resolve *name* to a canonical executable in a system or Homebrew bin dir.
 
@@ -778,6 +918,14 @@ def _trusted_bin(name: str) -> str | None:
                 continue
         if resolved:
             break
+    # Windows fallback: discover install paths from the MACHINE registry
+    # (HKLM), which is operator-owned and not writable by the agent process.
+    # This covers tools installed outside Program Files (e.g.
+    # D:\software\Git\cmd\git.exe) without trusting the inherited PATH (which
+    # includes agent-writable worktree venvs — the exact vector _trusted_bin
+    # is designed to close).
+    if resolved is None and platform_compat.IS_WINDOWS:
+        resolved = _win_registry_bin(name)
     _TRUSTED_BIN_CACHE[name] = resolved
     return resolved
 
