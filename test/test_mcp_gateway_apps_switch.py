@@ -9,6 +9,7 @@ import json
 
 import pytest
 
+from kiro_crew.config.loader import _HAS_JSONSCHEMA
 from kiro_crew.mcp_gateway.backend import MCP_APPS_ENV_FLAG, _mcp_apps_enabled
 
 
@@ -103,6 +104,10 @@ class TestConfigParsing:
         cfg_path = tmp_path / "config.json"
         cfg_path.write_text(json.dumps(payload), encoding="utf-8")
         monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
+        # Isolate from host config.local.json which could deep-merge unexpected
+        # values on macOS developer hosts.
+        monkeypatch.setattr(loader, "config_local_path", lambda: tmp_path / "config.local.json")
+        loader._invalidate_config_cache()
         return loader.KiroCrewConfig.load()
 
     def test_defaults_to_true_when_absent(self):
@@ -114,6 +119,7 @@ class TestConfigParsing:
         loaded = self._load_from(tmp_path, monkeypatch, {"mcp_gateway": {"enabled": True}})
         assert loaded.mcp_gateway.apps_enabled is True
 
+    @pytest.mark.skipif(not _HAS_JSONSCHEMA, reason="jsonschema not installed")
     def test_malformed_value_is_stripped_by_the_validator(self, tmp_path, monkeypatch, caplog):
         """A non-boolean is REMOVED upstream, so it arrives as absent.
 

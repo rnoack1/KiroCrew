@@ -93,7 +93,7 @@ describe('i18nT is never evaluated at module load', () => {
     expect(files.length).toBeGreaterThan(300)
   })
 
-  it('no module-scope i18nT() call', () => {
+  it('no module-scope i18nT() call', { timeout: 60_000 }, () => {
     const offenders: string[] = []
     for (const file of files) {
       const rel = relative(SRC, file).split('\\').join('/')

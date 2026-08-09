@@ -435,7 +435,7 @@ describe('a number is never glued to a unit literal', () => {
     + 'digits — put it in a style/CSS position the detector recognises, or add the file '
     + 'to ROUND_TRIP in this test naming the parser.'
 
-  it(`holds at most ${BASELINE} un-migrated number+unit literal(s)`, () => {
+  it(`holds at most ${BASELINE} un-migrated number+unit literal(s)`, { timeout: 60_000 }, () => {
     const offenders: string[] = []
     for (const file of files) {
       const rel = relative(SRC, file).split('\\').join('/')
