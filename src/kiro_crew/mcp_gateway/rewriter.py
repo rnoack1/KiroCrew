@@ -74,6 +74,7 @@ def _build_stub_entry(
     sandbox_mode: str,
     approval_mode: str,
     sidecars_written: set[str] | None = None,
+    poolable: bool = False,
 ) -> dict[str, Any]:
     """Return the rewritten ``mcpServers[name]`` entry.
 
@@ -133,6 +134,8 @@ def _build_stub_entry(
         "--approval-mode", approval_mode,
         "--socket", str(socket_path),
     ]
+    if poolable:
+        stub_args.append("--poolable")
     if env_pairs:
         secret_key_count = sum(1 for k in env_pairs if is_secret_env_key(k))
         if forward_declared_env_enabled():
@@ -309,6 +312,7 @@ def _rewrite_single_spec(
     sandbox_mode: str,
     approval_mode: str,
     poolable_servers: frozenset[str],
+    pooling_enabled: bool = True,
     inject_servers: dict[str, Any] | None = None,
     target_env: dict[str, str] | None = None,
     sidecars_written: set[str] | None = None,
@@ -373,15 +377,9 @@ def _rewrite_single_spec(
             # in _injectable_settings_servers.
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
-        is_poolable = entry.get("poolable") is True or name in poolable_servers
-        if not is_poolable:
-            # Opt-in pooling: a stdio MCP is unpooled (per-session, as today)
-            # unless its author/operator declares it stateless via poolable:true
-            # OR the dashboard-managed allowlist (config mcp_gateway.poolable_servers)
-            # names it. Safe by default — non-declared MCPs are treated as
-            # stateful. Strip the per-entry flag so kiro-cli sees a clean entry.
-            new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
-            continue
+        is_poolable = pooling_enabled and (
+            entry.get("poolable") is True or name in poolable_servers
+        )
         new_servers[name] = _build_stub_entry(
             stubs_dir=stubs_dir,
             server_name=name,
@@ -392,6 +390,7 @@ def _rewrite_single_spec(
             sandbox_mode=sandbox_mode,
             approval_mode=approval_mode,
             sidecars_written=sidecars_written,
+            poolable=is_poolable,
         )
         wrapped += 1
 
@@ -461,6 +460,11 @@ def _rewrite_single_spec(
             sandbox_mode=sandbox_mode,
             approval_mode=approval_mode,
             sidecars_written=sidecars_written,
+            poolable=pooling_enabled and (
+                entry.get("poolable") is True
+                or name in poolable_servers
+                or alias in poolable_servers
+            ),
         )
         wrapped += 1
         seen_targets.add(inject_sig)
@@ -472,9 +476,8 @@ def _rewrite_single_spec(
 
 def _injectable_settings_servers(
     settings_spec: dict[str, Any],
-    poolable_servers: frozenset[str],
 ) -> dict[str, Any]:
-    """Return ``{name: raw_entry}`` of poolable stdio servers in the global
+    """Return ``{name: raw_entry}`` of stdio servers in the global
     ``settings/mcp.json`` that must be injected per-agent instead of left in
     the settings overlay.
 
@@ -483,9 +486,9 @@ def _injectable_settings_servers(
     same-named stubs — one with the correct ``--agent``, one with an empty
     ``--agent`` because settings has no ``name``). By relocating them into
     each agent's own overlay (with the right identity) and dropping them from
-    the settings overlay, the duplicate disappears. Non-poolable and HTTP/SSE
-    settings servers are NOT returned — they stay raw in the settings overlay
-    and merge globally as before.
+    the settings overlay, the duplicate disappears. HTTP/SSE settings servers
+    are NOT returned — they need no stub and stay raw in the settings overlay,
+    merging globally.
     """
     servers = settings_spec.get("mcpServers") or {}
     out: dict[str, Any] = {}
@@ -507,9 +510,6 @@ def _injectable_settings_servers(
         if "command" not in entry:
             # HTTP/SSE — shareable, no stub needed; leave in settings overlay.
             continue
-        is_poolable = entry.get("poolable") is True or name in poolable_servers
-        if not is_poolable:
-            continue
         out[name] = entry
     return out
 
@@ -523,6 +523,7 @@ def rewrite_agents(
     sandbox_mode: str = "auto",
     approval_mode: str = "interactive",
     poolable_servers: frozenset[str] | None = None,
+    pooling_enabled: bool = True,
 ) -> tuple[dict[str, int], dict[str, str]]:
     """Populate ``overlay_dir`` with rewritten copies of ``source_dir/*.json``.
 
@@ -541,8 +542,15 @@ def rewrite_agents(
             so the stub's PoolKey matches KiroCrew's sandbox policy.
         approval_mode: Value from ``config.agent.approval_mode`` — same.
         poolable_servers: Server names from ``config.mcp_gateway.poolable_servers``.
-            A stdio server is pooled when its name is in this set OR its entry
-            sets ``poolable: true``. ``None`` is treated as an empty set.
+            A stdio server's backend is SHARED across connections when its name
+            is in this set OR its entry sets ``poolable: true``. Every stdio
+            server gets a stub either way — the stub is the addressing layer, and
+            this set only decides whether the backend behind it is shared.
+            ``None`` is treated as an empty set.
+        pooling_enabled: ``config.mcp_gateway.enabled``. When ``False`` no stub
+            is marked shareable, so every connection gets its own backend while
+            stubs stay in place — the state that lets MCP Apps work with pooling
+            entirely off.
 
     Returns:
         A ``(results, target_env)`` tuple:
@@ -600,7 +608,7 @@ def rewrite_agents(
             loaded = json.loads(kiro_settings_json.read_text())
             if isinstance(loaded, dict):
                 settings_src_spec = loaded
-                settings_poolable = _injectable_settings_servers(loaded, pool_set)
+                settings_poolable = _injectable_settings_servers(loaded)
         except (OSError, json.JSONDecodeError) as exc:
             logger.warning("failed to read global mcp.json: %s", exc)
 
@@ -630,6 +638,7 @@ def rewrite_agents(
             sandbox_mode=sandbox_mode,
             approval_mode=approval_mode,
             poolable_servers=pool_set,
+            pooling_enabled=pooling_enabled,
             inject_servers=settings_poolable,
             target_env=target_env,
             sidecars_written=written_sidecars,

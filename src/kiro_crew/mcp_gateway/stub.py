@@ -167,6 +167,18 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--auto-approve", default="", dest="auto_approve")
     p.add_argument("--approval-mode", default="interactive", dest="approval_mode")
     p.add_argument("--trust-all", action="store_true", dest="trust_all")
+    p.add_argument(
+        "--poolable",
+        action="store_true",
+        dest="poolable",
+        help=(
+            "Declare this connection's backend shareable with other connections "
+            "carrying an identical PoolKey. Absent, the gateway gives this "
+            "connection its own backend -- the same process topology as no "
+            "gateway at all, which is why absent is the safe default: a stub "
+            "from an overlay predating this flag never silently starts sharing."
+        ),
+    )
     p.add_argument("--channel-id", default=None, dest="channel_id")
     p.add_argument(
         "--socket",
@@ -408,6 +420,12 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         ),
         "approval_mode": args.approval_mode,
         "trust_all_tools": bool(args.trust_all),
+        # Not a PoolKey dimension: it selects HOW the backend is acquired
+        # (shared bucket vs this connection's own), not WHICH backends are
+        # interchangeable. Keeping it out of the key is what lets a
+        # per-connection backend exist without making every key
+        # connection-private.
+        "poolable": bool(args.poolable),
         "user_identity": user_identity,
         "channel_id": channel_id,
         "config_snapshot_hash": _CONFIG_SNAPSHOT_PLACEHOLDER,
