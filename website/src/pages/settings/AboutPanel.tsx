@@ -307,6 +307,11 @@ export function AboutPanel() {
   // when present keeps the desktop answer authoritative (it knows which FEED
   // the build tracks, not just how its version reads).
   const gatewayChannel = useAppSelector(s => s.dashboard.status?.release_channel)
+  // The channel this INSTALL follows, as opposed to the lane the running bytes
+  // were built on (`release_channel` above). Empty on a layout with no channel
+  // at all — a git checkout, a desktop bundle, a container — which is exactly
+  // when the switcher must not be offered, because the backend refuses it.
+  const statusUpdateChannel = useAppSelector(s => s.dashboard.status?.update_channel) || ''
   const isPrerelease = info?.stampedChannel === undefined
     ? (!!info?.packaged && versionLooksPrerelease(info?.version))
       || (!isDesktop && !!gatewayChannel && gatewayChannel !== 'stable')
@@ -508,6 +513,41 @@ export function AboutPanel() {
       else setRestarting(true)
     },
   })
+  // Restart WITHOUT updating: the missing half of the non-self-updatable flow.
+  // After the user runs the copied installer command in a terminal, the running
+  // gateway is still executing the old code and had no in-app way to reload.
+  //
+  // Same error shape as gwApply: os.execv kills the connection, so a bare
+  // network failure after the POST is the expected path, and only an ApiError
+  // (a real server rejection) is a failure worth showing.
+  const gwRestart = useMutation({
+    mutationFn: () => api.restartGateway(),
+    onSuccess: () => setRestarting(true),
+    onError: (e: unknown) => {
+      if (e instanceof ApiError) setApplyError(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
+      else setRestarting(true)
+    },
+  })
+  // Gateway channel switch (stable | insider | nightly). Unlike the desktop
+  // switcher this is a THREE-way control: cli.sh publishes and installs all
+  // three lanes, so every one of them is a real destination for a wheel install.
+  // Refuses on a git checkout or an externally managed layout (409), which is
+  // why the control is only rendered when the backend reported a channel.
+  const gwChannelMutation = useMutation({
+    mutationFn: (next: string) => api.setUpdateChannel(next),
+    onSuccess: (d: any) => {
+      // The response is the re-run check against the new channel, so adopt it
+      // wholesale rather than leaving the previous lane's verdict on screen.
+      if (typeof d?.channel === 'string') setGwChannel(d.channel)
+      setGwFound(!!d?.available)
+      setGwChecked(!!d?.checked)
+      setGwError(typeof d?.error === 'string' ? d.error : '')
+      setGwCommand(typeof d?.update_command === 'string' ? d.update_command : '')
+      setGwCommandCopied(false)
+      setGwTarget(typeof d?.remote_version === 'string' ? d.remote_version : '')
+      if (typeof d?.self_updatable === 'boolean') setGwSelfUpdatable(d.self_updatable)
+    },
+  })
   // Update is available if either the redux status flag or the latest check
   // response says so.
   const showUpdate = updateAvailable || gwFound
@@ -528,6 +568,10 @@ export function AboutPanel() {
   // for this layout. A missing command degrades to an explanation, never to a
   // button that cannot work.
   const showManualUpdate = showUpdate && !gwSelfUpdate
+  // A manual check's / switch's answer wins; otherwise the background check's,
+  // shipped in status. Empty means this layout has no channel to switch.
+  const effectiveGwChannel = gwChannel || statusUpdateChannel
+  const showGwChannelSwitcher = !isDesktop && !!effectiveGwChannel
 
   // Escape closes the confirm dialog (unless an apply/restart is in flight).
   useEffect(() => {
@@ -662,6 +706,76 @@ export function AboutPanel() {
             <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>{channel}</Row>
           )
         )}
+        {showGwChannelSwitcher && (
+          // Gateway (CLI / wheel / cloud source) channel switcher. THREE lanes,
+          // not the desktop's two: cli.sh installs nightly as a first-class
+          // channel, so a wheel install can genuinely follow it. The desktop is
+          // limited to stable ⇄ insider because its nightly is a separate
+          // side-by-side app that a feed switch cannot reach.
+          //
+          // Switching persists the preference and re-checks; it never installs.
+          // The new lane's build then arrives through the normal Update surface
+          // below, so a channel change is never an unconsented version jump.
+          <div className="flex flex-col" data-testid="gateway-channel-switcher">
+            <div className="flex items-center justify-between py-1.5 text-sm gap-3">
+              <div className="flex flex-col items-start min-w-0">
+                <span className="text-muted">{i18nT('pages.settings.aboutPanel.update_channel')}</span>
+                <button
+                  type="button"
+                  aria-expanded={showChannelHelp}
+                  data-testid="gateway-channel-help-toggle"
+                  className="text-[11.5px] text-accent underline decoration-dotted underline-offset-2 hover:decoration-solid cursor-pointer bg-transparent border-none p-0 text-left"
+                  onClick={() => setShowChannelHelp(v => !v)}
+                >
+                  {showChannelHelp
+                    ? i18nT('pages.settings.aboutPanel.channel_help_hide')
+                    : i18nT('pages.settings.aboutPanel.channel_help_show_all')}
+                </button>
+              </div>
+              <div className="shrink-0 flex items-center gap-2">
+                {gwChannelMutation.isPending && <RefreshCw size={13} className="lucide-inline animate-spin text-muted" />}
+                <SegmentedControl
+                  segments={[
+                    { key: 'stable', label: i18nT('pages.settings.aboutPanel.stable') },
+                    { key: 'insider', label: i18nT('pages.settings.aboutPanel.insider') },
+                    { key: 'nightly', label: i18nT('pages.settings.aboutPanel.nightly') },
+                  ]}
+                  value={effectiveGwChannel}
+                  onChange={next => {
+                    if (next !== effectiveGwChannel && !gwChannelMutation.isPending) gwChannelMutation.mutate(next)
+                  }}
+                  layoutId="gateway-update-channel"
+                  collapse={false}
+                />
+              </div>
+            </div>
+            {showChannelHelp && (
+              <div className="mb-1 p-2.5 bg-bg rounded-lg border border-border flex flex-col gap-1.5 text-[12px]" data-testid="gateway-channel-help">
+                <div className="flex gap-2">
+                  <span className="font-medium text-text shrink-0">{i18nT('pages.settings.aboutPanel.stable')}</span>
+                  <span className="text-muted">{i18nT('pages.settings.aboutPanel.channel_explainer_stable')}</span>
+                </div>
+                <div className="flex gap-2">
+                  <span className="font-medium text-text shrink-0">{i18nT('pages.settings.aboutPanel.insider')}</span>
+                  <span className="text-muted">{i18nT('pages.settings.aboutPanel.channel_explainer_insider')}</span>
+                </div>
+                <div className="flex gap-2">
+                  <span className="font-medium text-text shrink-0">{i18nT('pages.settings.aboutPanel.nightly')}</span>
+                  <span className="text-muted">{i18nT('pages.settings.aboutPanel.channel_explainer_nightly')}</span>
+                </div>
+                <span className="text-muted opacity-80 pt-1.5 border-t border-border">
+                  {i18nT('pages.settings.aboutPanel.channel_explainer_gateway_switch_note')}
+                </span>
+              </div>
+            )}
+            {gwChannelMutation.isError && (
+              <span className="text-[12px] text-danger flex items-start gap-1.5" data-testid="gateway-channel-error">
+                <AlertCircle size={13} className="lucide-inline shrink-0" />
+                <span>{i18nT('pages.settings.aboutPanel.channel_switch_failed')}</span>
+              </span>
+            )}
+          </div>
+        )}
         {isPrerelease && (
           // NOT behind the disclosure: a user already running prerelease bytes
           // is exactly who must see the ask, and hiding it behind a click means
@@ -754,7 +868,7 @@ export function AboutPanel() {
                           data-testid="manual-update-command">
                           {effectiveCommand}
                         </div>
-                        <div>
+                        <div className="flex items-center gap-2 flex-wrap">
                           {/* copyToClipboard, not navigator.clipboard directly: the
                               Clipboard API is unavailable on a plain-HTTP remote
                               gateway — exactly the deployment this command targets —
@@ -766,7 +880,26 @@ export function AboutPanel() {
                               ? i18nT('pages.settings.aboutPanel.copied')
                               : i18nT('pages.settings.aboutPanel.copy_command')}
                           </Btn>
+                          {/* The step the flow used to end without. The installer
+                              replaced the code on disk; this process is still
+                              running the old version until it re-execs. Primary
+                              once the command has been copied, because that is
+                              when restarting is the actual next action. */}
+                          <Btn primary={gwCommandCopied} onClick={() => { setApplyError(''); gwRestart.mutate() }}
+                            disabled={gwRestart.isPending || restarting} data-testid="gateway-restart">
+                            <RefreshCw size={13} className={`lucide-inline ${gwRestart.isPending || restarting ? 'animate-spin' : ''}`} /> {restarting
+                              ? i18nT('pages.settings.aboutPanel.restarting')
+                              : i18nT('pages.settings.aboutPanel.restart_gateway')}
+                          </Btn>
                         </div>
+                        <p className="text-[12px] text-muted">
+                          {i18nT('pages.settings.aboutPanel.restart_after_installer_note')}
+                        </p>
+                        {applyError && (
+                          <span className="text-[12px] text-danger flex items-start gap-1.5">
+                            <AlertCircle size={13} className="lucide-inline shrink-0" /> {applyError}
+                          </span>
+                        )}
                       </>
                     )}
                   </div>

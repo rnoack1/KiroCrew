@@ -198,10 +198,15 @@ def test_feed_urls_are_absolute_byte_host_urls() -> None:
 
 
 def test_feed_destination_is_pointer_prefix_yaml() -> None:
-    """The yml is uploaded under feed/ (pointer host behavior), not desktop/."""
+    """The yml is uploaded under feed/ (pointer host behavior), not desktop/.
+
+    The mac lane names its channel file literally; Linux resolves it per arch
+    into ``FEED_FILE`` (see the arch-mapping test below), so the assertion is on
+    the destination SHAPE rather than one filename.
+    """
     for path, job, channel_file in (
         (MAC_WORKFLOW, "publish", "latest-mac.yml"),
-        (LINUX_WORKFLOW, "publish-linux", "latest-linux.yml"),
+        (LINUX_WORKFLOW, "publish-linux", "${FEED_FILE}"),
     ):
         run = _feed_step(path, job)["run"]
         assert f"feed/${{CHANNEL}}/{channel_file}" in run, (
@@ -209,6 +214,47 @@ def test_feed_destination_is_pointer_prefix_yaml() -> None:
             "path website/electron/auto-update.js's provider resolves from the feed base"
         )
         assert "--content-type text/yaml" in run
+
+
+def test_linux_arch_resolution_matches_electron_updater_channel_file_rule() -> None:
+    """Each Linux arch resolves the channel file electron-updater actually asks for.
+
+    ``getChannelFilePrefix()`` appends no arch suffix for x64 and ``-<arch>``
+    otherwise, so x64 must resolve ``latest-linux.yml`` and arm64
+    ``latest-linux-arm64.yml``. A mismatch is invisible at publish time and
+    strands that arch's installs on an updater that 404s forever.
+
+    The basenames are pinned alongside because the versioned S3 key is
+    immutable: publishing one arch under the other's basename cannot be undone.
+    """
+    run = _step(_steps(LINUX_WORKFLOW, "publish-linux"), "Resolve arch-dependent names")["run"]
+    for arch, basename, feed_file, elf_machine in (
+        ("x64", "KiroCrew-x86_64", "latest-linux.yml", "x86-64"),
+        ("arm64", "KiroCrew-aarch64", "latest-linux-arm64.yml", "aarch64"),
+    ):
+        assert f"{arch})" in run, f"arch {arch} has no branch in the resolution step"
+        assert f"LINUX_BASENAME={basename}" in run
+        assert f"FEED_FILE={feed_file}" in run
+        assert f"EXPECT_ELF_MACHINE={elf_machine}" in run
+    # Fail closed: an unrecognised arch must abort rather than inherit x86_64's
+    # key, because that key is immutable once written.
+    assert "exit 1" in run, "unknown arch must abort the publish"
+
+
+def test_linux_lane_verifies_artifact_architecture_before_publishing() -> None:
+    """The arch check runs BEFORE the immutable versioned key is written.
+
+    The artifact name is caller-supplied, so nothing upstream proves the bytes
+    are the arch this invocation publishes them as. A wrong-arch publish passes
+    every checksum the updater applies and only fails on the user's machine.
+    """
+    steps = _steps(LINUX_WORKFLOW, "publish-linux")
+    verify = _step_index(steps, "Verify AppImage architecture")
+    publish = _step_index(steps, "Publish AppImage to distribution bucket")
+    assert verify < publish, (
+        "publish-linux.yml must verify the AppImage architecture before writing the "
+        f"immutable versioned key (verify={verify} publish={publish})"
+    )
 
 
 def test_mac_lane_keeps_the_legacy_json_feed_as_a_transition_bridge() -> None:
