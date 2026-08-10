@@ -89,6 +89,7 @@ if _APP_ROOT not in sys.path:  # allow `python3 sage_lib/review_driver.py` (run 
 
 from sage_lib import (  # noqa: E402
     adapters,
+    chat_session,
     discovery,
     pipeline,
     report,
@@ -310,16 +311,23 @@ def build_consolidation_task(namespace: str, live_path: str, candidate_path: str
     )
 
 
-def _accepts_activity(dispatch: Callable[..., Any]) -> bool:
-    """Whether a dispatch callable takes the ``on_activity`` reporter.
+def _accepts_kwarg(dispatch: Callable[..., Any], name: str) -> bool:
+    """Whether a dispatch callable accepts the keyword ``name``.
 
-    Inspected once per change rather than probed with try/except TypeError, which
-    would also swallow a TypeError raised from INSIDE the dispatcher and silently
-    downgrade to no progress."""
+    Inspected rather than probed with try/except TypeError, which would also
+    swallow a TypeError raised from INSIDE the dispatcher and silently downgrade
+    the feature. Keeps injected test fakes and older dispatchers working: an
+    unsupported keyword is simply not passed.
+    """
     try:
-        return "on_activity" in inspect.signature(dispatch).parameters
+        return name in inspect.signature(dispatch).parameters
     except (TypeError, ValueError):
         return False
+
+
+def _accepts_activity(dispatch: Callable[..., Any]) -> bool:
+    """Whether a dispatch callable takes the ``on_activity`` reporter."""
+    return _accepts_kwarg(dispatch, "on_activity")
 
 
 def build_review_task(change_link: str) -> str:
@@ -1061,11 +1069,16 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
                 "skipped_reason": "review_failed",
             }
         slot_clear = results.stake_shared(change_id, root)
+        # Keep THIS session (the deep review) for post-review chat: the findings'
+        # reasoning is in its context, so it is the only one worth asking. The
+        # gate/follow-up/post sessions are not kept.
+        review_kwargs: dict[str, Any] = {}
         if _accepts_activity(dispatch):
-            review_spawn = dispatch(review_prompt, timeout,
-                                    on_activity=report)
-        else:
-            review_spawn = dispatch(review_prompt, timeout)
+            review_kwargs["on_activity"] = report
+        if _accepts_kwarg(dispatch, "keep_session_key"):
+            review_kwargs["keep_session_key"] = chat_session.chat_key(
+                run_id or "", change_id)
+        review_spawn = dispatch(review_prompt, timeout, **review_kwargs)
         # The worker writes the shared data/results/<id>.json its prompt names;
         # move it into this run's private dir before reading. Without this the
         # run's dir stays empty and a completed review reports no findings.
