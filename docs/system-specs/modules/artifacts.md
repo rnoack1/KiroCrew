@@ -585,14 +585,26 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
   content-affecting mutation (create, content-changing update, delete). A
   metadata-only rename fires a separate `rename` signal that refreshes the
   stored group label without re-ingesting (no chunk churn).
-- **First-enable backfill tied to source-row creation.** Because the feature is
-  on by default, the store may already hold artifacts created before the
-  listener existed. The one-time pass that ingests them is tied to the
-  *creation of the aggregate source row*: when `ensure_artifact_source` actually
-  inserts the row (its existence is the idempotency marker — no separate flag),
-  a background backfill runs once. On every later boot the row already exists,
-  so nothing re-runs. (Nothing writes the store while the gateway is down, and
-  there is no out-of-process writer, so no recurring reconcile is needed.)
+- **Reconcile on every start, not a creation-gated backfill.** The feature is
+  opt-in, and while it is off the change-listener is not registered, so writes in
+  that window never reach the Library. Tying the catch-up pass to *creation of
+  the aggregate source row* cannot repair that: the row outlives the feature
+  being switched off, so on any install that ever had it on a later opt-in gets
+  `created=False` and the pass never runs — the gap is permanent and silent.
+  `ArtifactKnowledgeSync.start()` therefore runs `reconcile_artifacts`
+  **unconditionally**, comparing the artifact store against
+  `artifact_item_state`: ingest what is missing or changed, drop state for
+  artifacts that no longer exist. `created` is now reported for logging only.
+  - **Converged is free.** `ingest_artifact` already skips unchanged content, so
+    the steady state spends no extraction calls and logs at debug.
+  - **Removals are judged against every artifact, not the eligible kinds.**
+    Narrowing `auto_ingest_artifact_kinds` makes an artifact ineligible, not
+    absent; reaping on that basis would delete content the user never deleted.
+  - **Ingests are bounded per run** by `RECONCILE_INGEST_BUDGET` (a module
+    constant, not a config key). `ArtifactStore.list` is newest-first, so a
+    backlog from a long off-window drains across successive starts with the most
+    recent artifacts first, instead of arriving as one unbounded burst of billed
+    extraction calls. Unchanged artifacts do not consume budget.
 - **Security.** Ingested text *and* the LLM-originated artifact name (used as
   the source/item title) are passed through `redact_credentials()` and
   `redact_exfiltration_urls()` before landing in the Knowledge store (per

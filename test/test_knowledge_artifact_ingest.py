@@ -2,22 +2,25 @@
 
 import asyncio
 import hashlib
+import threading
+from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from kiro_crew.artifacts import ArtifactStore
+from kiro_crew.knowledge import artifact_ingest
 from kiro_crew.knowledge.artifact_ingest import (
     ARTIFACT_SOURCE_TYPE,
     ARTIFACT_SOURCE_URI,
     ArtifactKnowledgeSync,
-    backfill_artifacts,
     ensure_artifact_source,
     ingest_artifact,
+    reconcile_artifacts,
     refresh_artifact_name,
     remove_artifact,
 )
-from kiro_crew.knowledge.ingestion import IngestionPipeline
+from kiro_crew.knowledge.ingestion import DUPLICATE_JOB_STATUS, IngestionPipeline
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.store import KnowledgeStore
 
@@ -258,24 +261,195 @@ class TestRemoveArtifact:
         assert remove_artifact(kstore, sid, "never-ingested") == 0
 
 
-class TestBackfill:
+class TestReconcile:
     @pytest.mark.asyncio
-    async def test_backfill_ingests_eligible_only(self, pipeline, art_store, kstore):
+    async def test_reconcile_ingests_eligible_only(self, pipeline, art_store, kstore):
         sid, _ = ensure_artifact_source(kstore)
         art_store.create(name="MD", content="markdown body", kind="markdown")
         art_store.create(name="TXT", content="text body", kind="text")
         art_store.create(name="WID", content="<b>x</b>", kind="widget")
-        n = await backfill_artifacts(pipeline, art_store, sid, DEFAULT_KINDS)
-        assert n == 2
+        ingested, removed, deferred = await reconcile_artifacts(
+            pipeline, art_store, sid, DEFAULT_KINDS)
+        assert (ingested, removed, deferred) == (2, 0, 0)
         contents = _contents(kstore, sid)
         assert any("markdown body" in c for c in contents)
         assert any("text body" in c for c in contents)
 
     @pytest.mark.asyncio
-    async def test_backfill_empty_kinds_noop(self, pipeline, art_store, kstore):
+    async def test_reconcile_empty_kinds_noop(self, pipeline, art_store, kstore):
         sid, _ = ensure_artifact_source(kstore)
         art_store.create(name="MD", content="body", kind="markdown")
-        assert await backfill_artifacts(pipeline, art_store, sid, set()) == 0
+        assert await reconcile_artifacts(pipeline, art_store, sid, set()) == (0, 0, 0)
+
+    @pytest.mark.asyncio
+    async def test_a_converged_store_costs_nothing(self, pipeline, art_store, kstore):
+        """The steady state: reconcile runs every start, so it must be free."""
+        sid, _ = ensure_artifact_source(kstore)
+        art_store.create(name="MD", content="body", kind="markdown")
+        assert await reconcile_artifacts(pipeline, art_store, sid, DEFAULT_KINDS) == (1, 0, 0)
+        # Second pass sees identical content -> ingest_artifact returns None.
+        assert await reconcile_artifacts(pipeline, art_store, sid, DEFAULT_KINDS) == (0, 0, 0)
+
+    @pytest.mark.asyncio
+    async def test_reconcile_drops_state_for_artifacts_deleted_while_off(
+        self, pipeline, art_store, kstore
+    ):
+        """The listener is not registered while the feature is off, so a delete
+        during that window never reached the Library. Reconcile must drop it, or
+        the text stays searchable with no artifact behind it."""
+        sid, _ = ensure_artifact_source(kstore)
+        art = art_store.create(name="Doomed", content="doomed body", kind="markdown")
+        await reconcile_artifacts(pipeline, art_store, sid, DEFAULT_KINDS)
+        assert any("doomed body" in c for c in _contents(kstore, sid))
+        art_store.delete(art.slug)  # no listener: the Library is not told
+        ingested, removed, deferred = await reconcile_artifacts(
+            pipeline, art_store, sid, DEFAULT_KINDS)
+        assert (ingested, removed, deferred) == (0, 1, 0)
+        assert _contents(kstore, sid) == []
+
+    @pytest.mark.asyncio
+    async def test_an_ineligible_kind_is_not_treated_as_deleted(
+        self, pipeline, art_store, kstore
+    ):
+        """Narrowing `kinds` makes an artifact ineligible, not absent. Deleting
+        its items on that basis would drop content the user never deleted."""
+        sid, _ = ensure_artifact_source(kstore)
+        art_store.create(name="MD", content="still here", kind="markdown")
+        await reconcile_artifacts(pipeline, art_store, sid, DEFAULT_KINDS)
+        ingested, removed, deferred = await reconcile_artifacts(
+            pipeline, art_store, sid, {"text"})
+        assert removed == 0, "an ineligible kind must not be reaped"
+        assert any("still here" in c for c in _contents(kstore, sid))
+
+    @pytest.mark.asyncio
+    async def test_budget_defers_the_remainder_and_a_later_run_finishes_it(
+        self, pipeline, art_store, kstore
+    ):
+        sid, _ = ensure_artifact_source(kstore)
+        for i in range(3):
+            art_store.create(name=f"Doc{i}", content=f"body {i}", kind="markdown")
+        ingested, removed, deferred = await reconcile_artifacts(
+            pipeline, art_store, sid, DEFAULT_KINDS, budget=2)
+        assert (ingested, removed, deferred) == (2, 0, 1)
+        # The next start picks up what was deferred; nothing is lost.
+        ingested, removed, deferred = await reconcile_artifacts(
+            pipeline, art_store, sid, DEFAULT_KINDS, budget=2)
+        assert (ingested, removed, deferred) == (1, 0, 0)
+        assert len(_contents(kstore, sid)) == 3
+
+    @pytest.mark.asyncio
+    async def test_reconcile_empty_kinds_still_drops_deleted_state(
+        self, pipeline, art_store, kstore
+    ):
+        """An empty allowlist means "ingest nothing", not "let deleted content
+        stay searchable" -- an early return before the removal loop left a
+        deleted artifact's text answering searches forever."""
+        sid, _ = ensure_artifact_source(kstore)
+        art = art_store.create(name="MD", content="body", kind="markdown")
+        await reconcile_artifacts(pipeline, art_store, sid, DEFAULT_KINDS)
+        assert _contents(kstore, sid) != []
+        art_store.delete(art.slug)
+        assert await reconcile_artifacts(pipeline, art_store, sid, set()) == (0, 1, 0)
+        assert _contents(kstore, sid) == []
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_artifact_is_not_treated_as_deleted(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        """``ArtifactStore.list`` omits an artifact whose meta.json cannot be
+        read, so absence from the listing is not proof of deletion. Reaping on
+        the listing alone destroys a live artifact's indexed content."""
+        sid, _ = ensure_artifact_source(kstore)
+        art = art_store.create(name="MD", content="still here", kind="markdown")
+        await reconcile_artifacts(pipeline, art_store, sid, DEFAULT_KINDS)
+
+        # The artifact exists but is invisible to list() and unreadable by get().
+        monkeypatch.setattr(art_store, "list", lambda *a, **k: [])
+
+        def _unreadable(slug, *a, **k):
+            raise OSError("meta.json is briefly unreadable")
+
+        monkeypatch.setattr(art_store, "get", _unreadable)
+        ingested, removed, deferred = await reconcile_artifacts(
+            pipeline, art_store, sid, DEFAULT_KINDS)
+        assert removed == 0, "an unreadable artifact must not be reaped"
+        assert any("still here" in c for c in _contents(kstore, sid))
+        assert art.slug  # the artifact was never deleted from the store
+
+    @pytest.mark.asyncio
+    async def test_removals_run_off_the_event_loop(self, pipeline, art_store, kstore):
+        """``remove_artifact`` -> ``delete_items_batch`` -> ``store._load_graph``
+        is a full graph rebuild inside a SQLite transaction. Once per slug
+        deleted during a long off-window, on the loop, is the wedge
+        ``no-blocking-call-on-event-loop`` guards (see #2175 / #2336). Asserts
+        the THREAD, so keeping the call but dropping the ``to_thread`` hop fails.
+        """
+        sid, _ = ensure_artifact_source(kstore)
+        art = art_store.create(name="Doomed", content="doomed body", kind="markdown")
+        await reconcile_artifacts(pipeline, art_store, sid, DEFAULT_KINDS)
+        art_store.delete(art.slug)
+
+        seen_threads: list[int] = []
+        real = artifact_ingest.remove_artifact
+
+        def recording(*args, **kwargs):
+            seen_threads.append(threading.get_ident())
+            return real(*args, **kwargs)
+
+        with mock.patch.object(artifact_ingest, "remove_artifact", recording):
+            removed = (await reconcile_artifacts(
+                pipeline, art_store, sid, DEFAULT_KINDS))[1]
+
+        assert removed == 1
+        assert seen_threads, (
+            "remove_artifact was never called -- this test no longer exercises "
+            "the removal path and would pass vacuously")
+        assert threading.get_ident() not in seen_threads, (
+            "remove_artifact ran on the event-loop thread; it must be handed to "
+            "asyncio.to_thread")
+
+    @pytest.mark.asyncio
+    async def test_an_emptied_artifact_drops_its_indexed_group(
+        self, pipeline, art_store, kstore
+    ):
+        """Emptying an artifact must not leave its previous text searchable.
+
+        ``ingest_artifact`` early-returns on empty content, so without an
+        explicit drop the obsolete chunks answer searches forever -- reachable
+        both live and via reconcile after an off-window edit.
+        """
+        sid, _ = ensure_artifact_source(kstore)
+        art = art_store.create(name="Doc", content="original body", kind="markdown")
+        await reconcile_artifacts(pipeline, art_store, sid, DEFAULT_KINDS)
+        assert any("original body" in c for c in _contents(kstore, sid))
+        art_store.update(art.slug, content="   ")  # emptied while sync was off
+        await reconcile_artifacts(pipeline, art_store, sid, DEFAULT_KINDS)
+        assert _contents(kstore, sid) == [], "stale chunks survived an emptied artifact"
+
+    @pytest.mark.asyncio
+    async def test_a_duplicate_refusal_does_not_spend_the_budget(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        """A write the pre-ingest hash gate refuses returns a job id but does no
+        extraction, and re-attempts on every start. Counting it would let a
+        budget's worth of duplicates starve every other artifact forever."""
+        sid, _ = ensure_artifact_source(kstore)
+        for i in range(3):
+            art_store.create(name=f"Dup{i}", content=f"body {i}", kind="markdown")
+
+        real_status = pipeline.get_job_status
+
+        def _always_duplicate(job_id):
+            out = dict(real_status(job_id) or {})
+            out["status"] = DUPLICATE_JOB_STATUS
+            return out
+
+        monkeypatch.setattr(pipeline, "get_job_status", _always_duplicate)
+        ingested, removed, deferred = await reconcile_artifacts(
+            pipeline, art_store, sid, DEFAULT_KINDS, budget=1)
+        assert (ingested, deferred) == (0, 0), (
+            "a duplicate refusal consumed the ingest budget, so artifacts behind "
+            "it would be deferred on every start")
 
 
 class TestArtifactKnowledgeSync:
@@ -292,26 +466,41 @@ class TestArtifactKnowledgeSync:
         assert _contents(kstore, sid) == []
 
     @pytest.mark.asyncio
-    async def test_start_backfills_when_source_created(self, pipeline, art_store, kstore):
+    async def test_start_reconciles_when_source_created(self, pipeline, art_store, kstore):
         art_store.create(name="Pre", content="preexisting body", kind="markdown")
         sync = ArtifactKnowledgeSync(
             art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
             loop=asyncio.get_running_loop())
         await sync.start()
-        # start() schedules the backfill as a background task; await it.
-        assert sync._backfill_task is not None
-        await sync._backfill_task
+        # start() schedules the reconcile as a background task; await it.
+        assert sync._reconcile_task is not None
+        await sync._reconcile_task
         sid = kstore.get_source_by_uri(ARTIFACT_SOURCE_URI)["id"]
         assert any("preexisting body" in c for c in _contents(kstore, sid))
 
     @pytest.mark.asyncio
-    async def test_start_no_backfill_when_source_exists(self, pipeline, art_store, kstore):
-        ensure_artifact_source(kstore)  # pre-create the row
+    async def test_start_still_reconciles_when_the_source_row_already_exists(
+        self, pipeline, art_store, kstore
+    ):
+        """The regression this fix exists for.
+
+        On any install that ever had auto-ingest on, the aggregate source row
+        already exists. Gating the catch-up pass on ``created`` therefore made a
+        later opt-in a no-op and the drift permanent. start() must reconcile
+        regardless of whether it inserted the row.
+        """
+        sid, created = ensure_artifact_source(kstore)  # pre-create, as an upgrade has
+        assert created is True
+        # Content that appeared while the feature was off, so no listener saw it.
+        art_store.create(name="Missed", content="arrived while off", kind="markdown")
         sync = ArtifactKnowledgeSync(
             art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
             loop=asyncio.get_running_loop())
         await sync.start()
-        assert sync._backfill_task is None
+        assert sync._reconcile_task is not None, (
+            "start() skipped the reconcile because the source row already existed")
+        await sync._reconcile_task
+        assert any("arrived while off" in c for c in _contents(kstore, sid))
 
 
 class TestKnowledgeConfigDefaults:
@@ -392,7 +581,7 @@ class TestKindChangeReconciliation:
     reconciled rather than skipped.
 
     ``ingest_artifact`` early-returns on an ineligible kind. That is right for a
-    backfill sweep, but wrong for a *change*: an artifact ingested as markdown and
+    reconcile sweep, but wrong for a *change*: an artifact ingested as markdown and
     then switched to svg would keep answering searches from prose that no longer
     describes it. The dashboard now lets a user change the type directly, so this
     transition is reachable from the UI rather than only from a widget pull.
