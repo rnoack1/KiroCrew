@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from kiro_crew.slack.outbound import PostedOptions
 
 from kiro_crew.context_blocks import attributable_user_chars
+from kiro_crew.dashboard.snapshot_commit import drain_shielded
 from kiro_crew.dashboard.state import (
     BUSY_RECOVERY_PREFIX,
     COMPACTION_RECOVERY_PREFIX,
@@ -114,17 +115,18 @@ async def run_config_write(fn, /, *args, **kwargs):
         # completion either way -- so this only decides whether the lock outlives
         # it. The cancellation is re-raised once, never swallowed.
         fut = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
-        cancelled = False
-        while True:
-            try:
-                result = await asyncio.shield(fut)
-            except asyncio.CancelledError:
-                cancelled = True
-                continue
-            break
-        if cancelled:
-            raise asyncio.CancelledError
-        return result
+        try:
+            return await asyncio.shield(fut)
+        except asyncio.CancelledError:
+            # ONE definition, shared with the two vocabulary delete handlers; what this
+            # caller owns is the outcome below, since a config write publishes nothing.
+            await drain_shielded(fut)
+            # The write's own failure still wins over the cancellation; the drain returns
+            # on either outcome, so that choice is derived here.
+            failure = None if fut.cancelled() else fut.exception()
+            if failure is not None:
+                raise failure
+            raise
 
 
 # Per-turn compaction-failure backoff. See
