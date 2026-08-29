@@ -170,6 +170,14 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "last_consolidated",
         "closed",
         "closed_at",
+        # Undrained background-context entries, so closing a tab (or a gateway
+        # restart) no longer silently discards them. Slot-owned BECAUSE absence
+        # must clear: the queue is drained by the next user message, and a save
+        # after that drain omits the key — which is how the persisted copy is
+        # retired. That is also why the save writes it on EVERY save and not
+        # only on close: a non-close save that omitted the key would clear a
+        # copy persisted by an earlier close.
+        "pending_context",
         "memory_mode",
         "title",
         "agent",
@@ -276,6 +284,50 @@ ROWS_ONLY_OWNED_META_KEYS: frozenset[str] = frozenset({"_type", "created_at", "l
 ROWS_ONLY_DEFERRED_META_KEYS: frozenset[str] = (
     SLOT_OWNED_META_KEYS - ROWS_ONLY_OWNED_META_KEYS
 ) | frozenset({"title_origin", "title_refresh_mark", "created_by", "origin"})
+
+
+def merge_pending_context(disk: object, mine: object) -> list[dict]:
+    """Union two holders' queued context, the on-disk copy first.
+
+    A ROWS-ONLY save writes one slot's rows onto a transcript whose metadata line
+    describes a DIFFERENT live slot, and ``pending_context`` is inside
+    :data:`ROWS_ONLY_DEFERRED_META_KEYS` by construction. Deferring it drops content
+    the API acknowledged for the WRITING slot -- it has no other durable home on that
+    file -- while overwriting would drop the holder's. Both are acknowledged, the line
+    can carry both, and the restore side parks entries stamped for another session
+    rather than injecting them, so a union loses neither and leaks nothing.
+
+    Deduplicated by ``ctxId`` where present, else by content/stamp/source, so repeated
+    rows-only saves re-union their own output without growing it.
+
+    NOTHING IS DROPPED FOR SIZE, deliberately. An earlier revision took a byte budget
+    and skipped entries that did not fit, which discarded acknowledged context -- the
+    very defect this union exists to fix, reintroduced as an overflow rule. The union
+    is instead bounded by ADMISSION: :func:`pending_context_budget_room` is the single
+    capacity chokepoint and already refused anything over budget on each side, so the
+    result is at most two admitted queues and the dedupe above makes re-unioning
+    idempotent rather than cumulative. A queue that must shed content sheds it by
+    EXPIRY or DRAIN, both of which are recorded, never silently at persist time.
+    """
+    out: list[dict] = []
+    seen: set[object] = set()
+    for group in (disk, mine):
+        if not isinstance(group, list):
+            continue
+        for entry in group:
+            if not isinstance(entry, dict):
+                continue
+            ident = entry.get("ctxId")
+            key: object = (
+                ident
+                if isinstance(ident, str)
+                else (entry.get("content"), entry.get("injectedAt"), entry.get("source"))
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(entry)
+    return out
 
 
 def carry_unowned_metadata(
@@ -1160,6 +1212,16 @@ def transcript_stems(key: str) -> tuple[str, ...]:
         if legacy not in stems:
             stems.append(legacy)
     return tuple(stems)
+
+
+def same_transcript(a: str, b: str) -> bool:
+    """True when two session keys resolve to the SAME transcript file.
+
+    Compared as stem SETS, never by string equality: ``_safe_key`` is many-to-one, so
+    ``slack:C1:1.2`` and ``slack:C1_1.2`` both land in ``slack_C1_1.2.jsonl`` and an
+    equality test reports "different transcript" when nothing moved.
+    """
+    return bool(set(transcript_stems(a)) & set(transcript_stems(b)))
 
 
 def _redact_at_write_boundary(role: str, content: str) -> str:
