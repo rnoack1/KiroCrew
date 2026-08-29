@@ -23,6 +23,7 @@
 // localStorage key prefix — a storage identifier, never rendered. Not UI copy.
 // Kept in sync with SESSION_PREFIXES in `utils/storageGc.ts`, which garbage-
 // collects these keys; changing it orphans every persisted height map.
+import { sessionOwnerStamp, setSessionScopedItem } from '../../utils/storageGc'
 const LS_KEY_PREFIX = 'vc_heights_'
 // Baseline floor for the eviction cap. The effective cap grows with the
 // session's row count up to HARD_CEILING (see effectiveCap()).
@@ -86,6 +87,13 @@ export class HeightCache {
   // Session row count driving the size-aware eviction cap. 0 means UNKNOWN,
   // never "this session is empty" — see setRowCount() and load().
   private rowCount = 0
+
+  /** Resolved per flush, never cached. A gateway restart rebuilds the slot object with a new
+   *  incarnation under the same `created`, so a constructor-time token would date every later
+   *  write to an instance that no longer exists. */
+  private currentOwner(): string | undefined {
+    return sessionOwnerStamp(this.sessionId)
+  }
 
   constructor(sessionId: string, options?: { rowCount?: number }) {
     this.sessionId = sessionId
@@ -352,7 +360,7 @@ export class HeightCache {
         if (this.retired.has(k)) continue
         obj[k] = v
       }
-      this.storage.setItem(this.storageKey, JSON.stringify(obj))
+      setSessionScopedItem(this.storage, this.storageKey, JSON.stringify(obj), this.currentOwner())
     } catch {
       // Quota exceeded or transient failure — drop this flush. A future set()
       // will dirty the cache again and we'll retry on the next debounce window.
