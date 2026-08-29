@@ -1246,13 +1246,53 @@ _CRITICAL_RULES_TAIL = (
     "renders each label on a single line, so a long label displays cut off; "
     "put supporting detail in the message body before the [OPTIONS:] line and "
     "keep the label itself to the bare instruction.\n"
-    "[END CRITICAL RULES]\n\n"
 )
+# Zero-turn option actions. DASHBOARD-ONLY, and deliberately NOT part of
+# ``_CRITICAL_RULES_TAIL`` above: the tail is shared verbatim by both variants,
+# so teaching the marker there would inject it into every messaging channel —
+# where the chip cannot render and every renderer strips the marker — spending
+# tokens on an instruction whose only possible outcome is a dropped marker.
+#
+# The example is load-bearing, not decoration. ``OPTION_ACTIONS_RE_LINE``
+# requires the marker to END its line (a closer, then only optional whitespace),
+# so an action marker with prose after it on the same line is silently dropped:
+# a model taught the field syntax but not the placement would emit markers that
+# parse to nothing. Both markers sharing one final line DOES parse, in either
+# order, which is what lets the close be offered alongside ordinary choices
+# without violating the "[OPTIONS:] is the final line" rule stated above.
+_OPTION_ACTIONS_RULE_DASHBOARD = (
+    'When one of the choices you are offering is simply to be DONE — "nothing '
+    'else", "we\'re finished", "that\'s all" — offer it as an ACTION instead of '
+    "as ordinary option text, by putting [OPTION-ACTIONS: close=<label>] at the "
+    "END of that same final marker line:\n"
+    "[OPTIONS: Show me the diff | Run the tests] "
+    "[OPTION-ACTIONS: close=Nothing else, close this session]\n"
+    "An action chip performs the action directly and starts NO new turn, while a "
+    "plain [OPTIONS:] label is sent back as the user's next message — so offering "
+    '"we\'re done here" as ordinary option text costs a full model call to answer a '
+    "request to stop talking. Use close=<label> INSTEAD of a plain option for that "
+    "case, never both, or the user sees the same choice twice.\n"
+    "The label is free text in the USER's voice, never parsed for meaning, but it "
+    'must NOT say "tab": the action closes the SESSION, and a label promising to '
+    "close a tab names a smaller effect than the one the user gets. "
+    "`close` is the only action, the marker must be the last thing on its line, "
+    "and nothing dispatches until the user clicks — so never add it as decoration "
+    "where being finished is not actually one of the choices.\n"
+)
+_CRITICAL_RULES_END = "[END CRITICAL RULES]\n\n"
 # The dashboard variant is the module's canonical block: tests and the
 # marker-neutralization prefix check treat "a critical-rules block" as one of
 # these two fixed strings, so both stay module constants (never templated).
-_CRITICAL_RULES = _CRITICAL_RULES_HEAD + _DIFF_RULE_DASHBOARD + _CRITICAL_RULES_TAIL
-_CRITICAL_RULES_CHANNEL = _CRITICAL_RULES_HEAD + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL
+_CRITICAL_RULES = (
+    _CRITICAL_RULES_HEAD
+    + _DIFF_RULE_DASHBOARD
+    + _CRITICAL_RULES_TAIL
+    + _OPTION_ACTIONS_RULE_DASHBOARD
+    + _CRITICAL_RULES_END
+)
+_CRITICAL_RULES_CHANNEL = (
+    _CRITICAL_RULES_HEAD + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL + _CRITICAL_RULES_END
+)
 
 # Runtime sources whose transcript renders tool-call cards (and therefore the
 # inline diff card). Everything else — messaging channels, cron, subagent,

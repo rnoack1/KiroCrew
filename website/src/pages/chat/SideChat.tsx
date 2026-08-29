@@ -10,6 +10,8 @@ import ChatMessageList from '../../app-sdk/ChatMessageList'
 import FollowUpBar from '../../components/FollowUpBar'
 import { deriveFollowUpOptions } from '../../app-sdk/protocol'
 import { useComposerDraft, draftByteSize } from '../../app-sdk/useComposerDraft'
+import { useSlotComposerRegistration } from '../../hooks/useSlotComposerRegistration'
+import { useSlotDraftPersistence } from '../../hooks/useSlotDraftPersistence'
 import ChatInput from '../../components/ChatInput'
 import { SlotProvider } from '../../providers/SlotContext'
 import { useConnected } from '../../hooks/useConnected'
@@ -139,9 +141,11 @@ export default function SideChat({ slot }: { slot: string }) {
    *  - An unconditional dispatch (no mode gate) would let any plan-shaped side
    *    answer cancel or advance the parent's real plan.
    *  Pinned by src/test/SideChat.planExclusion.test.tsx. */
+  // Same as the plan case: `followUpAction` is dropped, because a chip whose click
+  // only sends its own label promises a close this host cannot perform.
   const { followUpOptions } = useMemo(
     () => deriveFollowUpOptions(transcript, isStreaming),
-    [transcript, isStreaming]
+    [transcript, isStreaming],
   )
 
   /** The composer's draft behaviour, owned by the chat SDK rather than by this file: what a
@@ -153,6 +157,13 @@ export default function SideChat({ slot }: { slot: string }) {
     draft, setDraft,
     picked: pickedOptions, toggleOption, mergeIntoDraft, exceedsByteLimit,
   } = composer
+
+  // This surface drops the action chip, so it never reaches the dispatcher — but a close
+  // fired from the MAIN chat deletes the slot this draft belongs to. Hence the register.
+  useSlotComposerRegistration(() => slot, draft.trim().length > 0)
+  // The registration alone is not enough: its cross-window claim expires while this
+  // window is frozen in the background, and the text lives only in React state.
+  useSlotDraftPersistence(slot, draft)
 
   /** Wrapper around the native composer; the Select-to-Ask seed resolves the
    *  textarea through it (`textarea[data-composer-input]`) instead of a
