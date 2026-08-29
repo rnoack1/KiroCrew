@@ -1252,7 +1252,10 @@
     "papyrus": {
       "workspace": {
         "co_author_conflict_discard_button": "Discard changes",
-        "co_author_conflict_discard_title": "Discard unsaved changes?"
+        "co_author_conflict_discard_title": "Discard unsaved changes?",
+        "context_not_attached": "Mention the document in your next message so the agent can see it.",
+        "context_notice_title": "Couldn't share the document with the agent",
+        "context_queue_full": "This chat can't take more background info right now. Mention the document in your next message so the agent can see it."
       }
     }
   },
@@ -3034,6 +3037,10 @@
       "artifact_slug": "Artifact: {{slug}}",
       "back_to_editor": "Back to editor",
       "change_how_this_document_is_rendered": "Change how this document is rendered",
+      "chat_context_not_attached": "Mention the artifact in your next message so the agent can see it.",
+      "chat_context_notice_title": "Couldn't share the artifact with the agent",
+      "chat_context_queue_full": "This chat can't take more background info right now. Mention the artifact in your next message so the agent can see it.",
+      "chat_context_stale_notice_title": "Latest version not shared with the agent",
       "chat_with_the_agent_about_this_artifact": "Chat with the agent about this artifact",
       "comment": "Comment",
       "comment_marked_for_review": "Comment marked for review",

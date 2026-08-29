@@ -8,7 +8,6 @@ import json
 import logging
 import math
 import os
-import re
 import tempfile
 import time
 import uuid
@@ -92,6 +91,7 @@ from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
     effective_session_key,
     history_corpus_unreadable,
+    preaudit_persisted_binding,
     slot_history_key,
     subagents_attached,
 )
@@ -107,8 +107,14 @@ from kiro_crew.dashboard.remote_relay import (
     remote_bound_refusal,
 )
 from kiro_crew.dashboard.state import (
+    MAX_CONTEXT_CONTENT,
+    MAX_SOURCE_LEN,
+    SOURCE_CTRL_RE,
     DashboardState,
     _ChatSlot,
+)
+from kiro_crew.dashboard.state import _finite_number as _is_finite_number
+from kiro_crew.dashboard.state import (
     _mark_permission_resolved,
     _normalize_slot_key,
     append_and_surface,
@@ -120,7 +126,11 @@ from kiro_crew.dashboard.state import (
 )
 from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
-from kiro_crew.history import carry_provenance, is_incognito_transcript, transcript_stems
+from kiro_crew.history import (
+    carry_provenance,
+    is_incognito_transcript,
+    same_transcript,
+)
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
@@ -2876,10 +2886,7 @@ def _replacement_shares_transcript(state: DashboardState, name: str, slot: _Chat
     current = state._slots.get(name)
     if current is None or current is slot:
         return False
-    return bool(
-        set(transcript_stems(slot_history_key(current)))
-        & set(transcript_stems(slot_history_key(slot)))
-    )
+    return same_transcript(slot_history_key(current), slot_history_key(slot))
 
 
 def _resettle_restricted_key(state: DashboardState, name: str) -> None:
@@ -8586,6 +8593,17 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             status=409,
         )
 
+    # RESOLVED BEFORE THE SLOT IS PUBLISHED: the build below makes this slot reachable by a
+    # concurrent send, so an await after it lets a turn append ahead of the history replay.
+    _resume_binding: bool | None = None
+    if meta.get("pending_context") and meta.get("linked_session_key"):
+        _resume_binding = await preaudit_persisted_binding(meta, history_key)
+        # Re-check the LIVE slot after this await, exactly as the member path above does after
+        # its own: it is a suspension point between the last barrier and the publish below.
+        resume_resp = await _live_slot_resume_response(state, request, history_key, name)
+        if resume_resp is not None:
+            return resume_resp
+
     slot = state.get_or_create_slot(
         name,
         app=request.get("app", ""),
@@ -8650,6 +8668,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # treats the slot as never-hydrated and skips the delete-won comparison.
     slot._disk_meta_created_at = str(meta.get("created_at") or "")
     slot._disk_meta_observed = bool(meta)
+    slot._disk_meta_key = history_key
     # On a member key the pin came from the BINDING at slot creation above and
     # metadata may not override it (same tamperable file the guard refused to
     # trust). On an ordinary key, mode="member" may not ride in either — the
@@ -8664,6 +8683,29 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         slot.workspace = meta["workspace"]
     if meta.get("project"):
         slot.project = meta["project"]
+    # Re-seat undrained background context, so reopening a tab from History
+    # recovers context the close would otherwise have discarded. Revalidated,
+    # re-expired against wall-clock and re-capped inside
+    # ``restore_pending_context``; the gateway-restart path in
+    # ``_rehydrate_slot_from_history`` carries the same call.
+    # THE BINDING MUST LAND BEFORE THE QUEUE: an unbound cron/workflow slot resolves to
+    # ``dashboard:<name>``, so the restore PARKS its own authorized context undelivered.
+    if _resume_binding is not None:
+        if _resume_binding:
+            slot.linked_session_key = str(meta["linked_session_key"])
+        else:
+            logger.warning(
+                "not adopting persisted binding %r on resume of %s: it does not name this "
+                "transcript, so the slot stays unbound and its stamped context stays parked",
+                str(meta["linked_session_key"]),
+                history_key,
+            )
+    if meta.get("pending_context"):
+        slot.restore_pending_context(meta["pending_context"])
+        # Record the transcript this queue was hydrated FROM (``get_metadata(history_key)``),
+        # so a rebind can WITHHOLD another origin's entries instead of copying them.
+        slot._ctx_persisted_key = history_key
+        slot.adopt_ctx_owner(history_key)
     if meta.get("channel_folder_filed"):
         # Resuming from History must carry the filing marker forward, or the
         # next save of this slot drops it and the conversation is re-filed.
@@ -9476,7 +9518,12 @@ async def api_chat_slot_color(request: web.Request) -> web.Response:
 
 
 _MAX_CONTEXT_PER_SOURCE = 10
-_MAX_CONTEXT_CONTENT = 40000
+# Alias to the canonical definition in ``state``, which sizes the persistence
+# budget from it. Two independent literals would let the boundary accept a length
+# the queue cannot persist (or refuse one it could) the moment either moved, and
+# nothing would fail until content was silently lost — the exact class of defect
+# the budget work here is about. ``state`` is the only legal home: this module
+# already imports it, so the dependency runs one way.
 # Default expiry for a note's context half: if the user never sends a follow-up
 # within 24h, the stale entry is dropped at drain rather than attaching itself to
 # some far-future unrelated message. The visible transcript line has no maxAge.
@@ -9494,8 +9541,6 @@ _UNSET = object()
 # control chars and newlines to keep a crafted label from breaking out of the
 # frame line, and cap the length. Defense-in-depth: the real free-form surface
 # is ``content``, not ``source``.
-_MAX_SOURCE_LEN = 64
-_SOURCE_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def _validate_content(content: object) -> web.Response | None:
@@ -9514,10 +9559,10 @@ def _validate_content(content: object) -> web.Response | None:
             {"error": "content is required", "code": "empty_content"},
             status=400,
         )
-    if len(content) > _MAX_CONTEXT_CONTENT:
+    if len(content) > MAX_CONTEXT_CONTENT:
         return web.json_response(
             {
-                "error": f"content exceeds {_MAX_CONTEXT_CONTENT} char limit",
+                "error": f"content exceeds {MAX_CONTEXT_CONTENT} char limit",
                 "code": "content_too_long",
             },
             status=400,
@@ -9551,7 +9596,7 @@ def _validate_source(source: object) -> web.Response | None:
         )
     # Checked BEFORE the strip, which would otherwise silently drop a leading or
     # trailing tab/newline the documented contract says is a 400.
-    if isinstance(source, str) and _SOURCE_CTRL_RE.search(source):
+    if isinstance(source, str) and SOURCE_CTRL_RE.search(source):
         return web.json_response(
             {
                 "error": "source must not contain control characters or newlines",
@@ -9562,12 +9607,12 @@ def _validate_source(source: object) -> web.Response | None:
     normalized = _normalize_source(source)
     if normalized == "":
         return None
-    if len(normalized) > _MAX_SOURCE_LEN:
+    if len(normalized) > MAX_SOURCE_LEN:
         return web.json_response(
-            {"error": f"source exceeds {_MAX_SOURCE_LEN} char limit", "code": "source_too_long"},
+            {"error": f"source exceeds {MAX_SOURCE_LEN} char limit", "code": "source_too_long"},
             status=400,
         )
-    if _SOURCE_CTRL_RE.search(normalized):
+    if SOURCE_CTRL_RE.search(normalized):
         return web.json_response(
             {
                 "error": "source must not contain control characters or newlines",
@@ -9602,13 +9647,17 @@ def _validate_max_age(max_age: object) -> web.Response | None:
     # NaN and Infinity are floats that slip past the <= 0 check (NaN <= 0 is
     # False) and then make injected_at + max_age non-comparable at drain, so the
     # entry would never expire. Reject them at the boundary.
-    # An arbitrary-precision int passes the isinstance check above, then
-    # OverflowErrors inside isfinite's float conversion — same 400, not a 500.
-    try:
-        finite = math.isfinite(max_age)
-    except OverflowError:
-        finite = False
-    if not finite:
+    #
+    # Delegated to `state._finite_number` (imported as `_is_finite_number`, because
+    # this module's own `_finite_number` returns `float | None` for the cosmetic
+    # context-reading fields -- same name, different contract) rather than
+    # re-implementing the isfinite-plus-OverflowError pair here: an
+    # arbitrary-precision int passes the isinstance check above and then
+    # OverflowErrors inside isfinite's float conversion, and having two copies of
+    # that rule is how the boundary and the hydrate path drift. The isinstance
+    # branch above stays separate because it answers a DIFFERENT 400 code that
+    # callers and tests depend on.
+    if not _is_finite_number(max_age):
         return web.json_response(
             {"error": "maxAge must be a finite number", "code": "non_finite_number"},
             status=400,
@@ -9754,8 +9803,9 @@ def _source_cap_reached(slot: _ChatSlot, source: str) -> bool:
     Entries HELD for the deferred-note flush count as well. They are not in the
     queue yet, so a cap that read the queue alone admitted every one of them:
     ten same-source notes posted during one turn each saw a clear cap, and the
-    flush then promoted all ten at once, past the per-source ceiling and into
-    the FIFO eviction that drops other sources' context.
+    flush then promoted all ten at once, past the per-source ceiling. Nothing is
+    evicted to absorb that -- reaching a ceiling REFUSES the arriving entry -- so
+    the overflow instead spent seats other sources could no longer claim.
     """
     if not source:
         return False
@@ -9773,14 +9823,25 @@ def _enqueue_pending_context(
     slot: _ChatSlot,
     content: str,
     source: str,
-    ephemeral: bool,
     max_age: int | float | None,
+    ephemeral: bool = False,
+    context_key: str | None = None,
 ) -> web.Response | None:
     """Build, cap, and append a ``_pending_context`` entry.
 
-    Returns a 4xx response on a bad request (429 per-source cap, 400 invalid
-    ``max_age``) WITHOUT mutating the queue, else None on success. The entry is
-    consumed on the next user-initiated message via ``drain_pending_context``.
+    Returns a 4xx response on a bad request (429 queue full, 400 invalid
+    ``max_age``), else None on success. A queued entry is consumed on the next
+    user-initiated message via ``drain_pending_context``. Delivery is not
+    guaranteed to be that message, though: a close saves the queue, and an entry
+    past the metadata line's budget is spilled to the transcript's
+    context-overflow sidecar, which the next hydration folds back.
+
+    A 400 leaves the queue untouched. A 429 is decided by
+    ``append_pending_context`` itself, which reclaims EXPIRED entries on the way,
+    so a refusal can have dropped dead entries — nothing LIVE is ever evicted. The
+    narrower "no mutation on any 4xx" this once promised was bought by asking a
+    second copy of the capacity question and then ignoring the authoritative
+    answer, which is what let an already-expired entry return 200 unqueued.
 
     ``max_age`` is the resolved seconds-to-live, or None for no expiry. HTTP
     callers already validate it via ``_validate_max_age``; the same guard runs
@@ -9788,11 +9849,56 @@ def _enqueue_pending_context(
     through to the drain.
 
     """
-    entry, err = _build_pending_context_entry(slot, content, source, ephemeral, max_age)
+    entry, err = _build_pending_context_entry(
+        slot, content, source, max_age, ephemeral, context_key
+    )
     if err is not None:
         return err
     assert entry is not None
-    slot.append_pending_context(entry)
+    # Refuse what cannot be PERSISTED, rather than accepting it and dropping it at
+    # save time. The queue is durable across a close and a restart, and that
+    # durability is bounded by what one metadata line can carry — a bound that
+    # cannot be raised to the boundary's worst case without making rotation
+    # truncate the transcript. Accepting here and truncating later would hand the
+    # caller a 200 for content that is then discarded with no surface reporting it;
+    # a 429 is recoverable, because the caller can retry after the next drain.
+    #
+    # ASKED ONCE, OF THE AUTHORITY. `append_pending_context` enforces this same
+    # budget internally and RETURNS whether the entry was seated, so a standalone
+    # `pending_context_budget_room` preflight here put the identical capacity
+    # question twice and then discarded the append's own answer.
+    #
+    # Discarding it was not merely redundant. The append refuses one case the
+    # budget check never inspects: an entry that arrives ALREADY EXPIRED is dropped
+    # outright rather than seated (a held note's maxAge can elapse while its turn
+    # runs). With the return ignored, that entry took the success path and the
+    # caller was told 200 for content that was never queued — the
+    # acknowledged-then-dropped defect this whole budget exists to prevent, reached
+    # through the expiry arm instead of through truncation. Branching on the return
+    # closes it, and leaves ONE decision made by the code that owns the ceiling.
+    if not slot.append_pending_context(entry):
+        # ONE refusal code, covering BOTH grounds the append refuses on. An
+        # earlier revision split them and answered 409 `context_entry_expired`
+        # for the second, which bought a second public code for a case that can
+        # only arise when a caller's own TTL elapses inside its own request --
+        # sub-second, no consumer, and undocumented. So the arm is gone.
+        #
+        # What that arm was right about is kept: the response no longer ASSERTS a
+        # full queue, because an entry that arrived already dead is refused with
+        # the queue empty, and telling that caller "the queue is full" sends it
+        # away to retry after a drain that was never the problem. The wording and
+        # the documented meaning are "could not be queued", with the two causes
+        # named in `docs/app-kit/api-reference.md`.
+        return web.json_response(
+            {
+                "error": (
+                    "pending context could not be queued for this session: the "
+                    "queue is full, or the entry expired before it was queued"
+                ),
+                "code": "context_not_queued",
+            },
+            status=429,
+        )
     return None
 
 
@@ -9800,8 +9906,9 @@ def _build_pending_context_entry(
     slot: _ChatSlot,
     content: str,
     source: str,
-    ephemeral: bool,
     max_age: int | float | None,
+    ephemeral: bool = False,
+    context_key: str | None = None,
 ) -> tuple[dict[str, object] | None, web.Response | None]:
     """Validate and build one context entry WITHOUT touching the queue.
 
@@ -9825,12 +9932,63 @@ def _build_pending_context_entry(
     entry: dict[str, object] = {
         "content": content,
         "source": source,
-        "ephemeral": ephemeral,
         "injectedAt": time.time(),
+        # STABLE IDENTITY, persisted: origin ownership is tracked by id, never by
+        # timestamp ordering, which a clock rollback or a future stamp misclassifies.
+        "ctxId": uuid.uuid4().hex,
     }
     if max_age is not None:
         entry["maxAge"] = max_age
+    # HONOURED AS MEMORY-ONLY, not ignored. Recorded on the entry so the export can
+    # withhold it: the flag has to survive the queue to be actionable at save time.
+    if ephemeral:
+        entry["ephemeral"] = True
+    # CARRIED SO THE SUPPRESSION SURVIVES A RELOAD: the caller names which snapshot this
+    # entry is, and the boundary refuses a second copy of one still pending.
+    if context_key:
+        entry["contextKey"] = context_key
     return entry, None
+
+
+def _validate_context_key(raw: object) -> web.Response | None:
+    """400 when ``contextKey`` is present but unusable, mirroring :func:`_validate_source`.
+
+    REFUSED RATHER THAN TRUNCATED, and that asymmetry would be a data-loss bug rather than a
+    style choice: the key is an IDENTITY the dedup compares, so clipping it to the cap aliases
+    two distinct keys sharing a prefix onto one. The second post would then match the first,
+    answer 200, and append nothing -- content acknowledged and silently dropped, with no
+    surface reporting it. ``source`` is already refused at this same limit, so refusing here
+    reuses that convention instead of inventing a second one.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return web.json_response(
+            {"error": "contextKey must be a string", "code": "invalid_context_key"},
+            status=400,
+        )
+    # Checked BEFORE the strip, mirroring :func:`_validate_source`: a leading or trailing newline
+    # survives into the dedup, which strips the key onto an earlier one and drops this post at 200.
+    if SOURCE_CTRL_RE.search(raw):
+        return web.json_response(
+            {
+                "error": "contextKey must not contain control characters or newlines",
+                "code": "invalid_context_key",
+            },
+            status=400,
+        )
+    normalized = raw.strip()
+    if normalized == "":
+        return None
+    if len(normalized) > MAX_SOURCE_LEN:
+        return web.json_response(
+            {
+                "error": f"contextKey exceeds {MAX_SOURCE_LEN} char limit",
+                "code": "context_key_too_long",
+            },
+            status=400,
+        )
+    return None
 
 
 async def api_chat_slot_context(request: web.Request) -> web.Response:
@@ -9848,7 +10006,7 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
         {
             "content": "...",
             "source": "watch-check",   // optional
-            "ephemeral": true,         // optional, default true
+            "ephemeral": true,         // optional, DEFAULT false; true = memory-only
             "maxAge": 300              // optional, seconds
         }
     """
@@ -9876,6 +10034,7 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
         _validate_content(content)
         or _validate_source(body.get("source"))
         or _validate_max_age(body.get("maxAge"))
+        or _validate_context_key(body.get("contextKey"))
     )
     if bad is not None:
         return bad
@@ -9886,6 +10045,33 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
     if stale is not None:
         return stale
 
+    # DECIDED FROM THE DURABLE RECORD, not from client memory: the queue round-trips
+    # through session metadata, so a reload finds its own earlier entry still pending.
+    _ctx_key = body.get("contextKey")
+    if isinstance(_ctx_key, str) and _ctx_key.strip():
+        # NOT clipped to the cap: the validator above refuses an overlong key outright, because
+        # truncating an IDENTITY aliases two distinct keys onto one and drops the second post.
+        _ctx_key = _ctx_key.strip()
+        _ctx_src = _normalize_source(body.get("source"))
+        # EVERY OWNED LIVE BUCKET: a drain moves entries to ``_ctx_inflight`` and an over-ceiling
+        # one parks in ``_ctx_overflow``, both still undelivered. Foreign held content is excluded.
+        _now = time.time()
+        _owned_live = [
+            *slot._pending_context,
+            *(getattr(slot, "_ctx_inflight", None) or []),
+            *(getattr(slot, "_ctx_overflow", None) or []),
+        ]
+        # UNEXPIRED ONLY. An expired entry is discarded by the drain, so matching one would
+        # answer 200 for a repost whose replacement content then never reaches the model.
+        if any(
+            e.get("contextKey") == _ctx_key
+            and e.get("source") == _ctx_src
+            and not context_entry_expired(e, _now)
+            for e in _owned_live
+        ):
+            return web.json_response({"ok": True, "pending": len(slot._pending_context)})
+    else:
+        _ctx_key = None
     # Normalize the source the same way /note does, so a whitespace-padded label
     # renders a clean drain frame and shares one cap bucket with its trimmed
     # form. /context keeps empty-source-uncapped and applies no default label: a
@@ -9894,8 +10080,9 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
         slot,
         content,
         _normalize_source(body.get("source")),
-        body.get("ephemeral", True),
         body.get("maxAge"),
+        body.get("ephemeral") is True,
+        _ctx_key,
     )
     if err is not None:
         return err
@@ -9909,6 +10096,8 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
         resources=f"slot={name}",
     )
 
+    # No forced save and no `durable` field: the queue now round-trips through session
+    # metadata on the ordinary flush/close paths, like every other slot mutation.
     return web.json_response({"ok": True, "pending": len(slot._pending_context)})
 
 
@@ -9954,7 +10143,7 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
                                       //   <=64 chars, no control chars; empty -> "note"
             "maxAge": 86400,          // optional seconds; omitted -> 24h default.
                                       //   Explicit null -> no expiry, as on /context.
-            "ephemeral": true         // optional, default true (passed to the context entry)
+            "ephemeral": true         // optional, DEFAULT false; true = memory-only
         }
 
     Returns ``{"ok", "appended", "visibleDeferred", "contextSkipped", "pending"}``.
@@ -9965,8 +10154,16 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     When a turn is already running BOTH halves are held and written at that
     turn's end, so ``appended`` is false and ``visibleDeferred`` is true. Its
     order is preserved and it is not dropped while this gateway stays up -- the
-    hold is in memory, so a 200 means accepted for this gateway lifetime, not
-    durable delivery.
+    HOLD is in memory, so a 200 with ``visibleDeferred`` promises ordering
+    against the running turn, not persistence of the held visible line.
+
+    Durability differs between the halves, and only the hold is volatile. Once
+    the context half reaches ``_pending_context`` it is persisted into the
+    session's metadata line and re-seated on restore, so it survives a close and
+    a gateway restart (``maxAge`` keeps running while the session is closed). A
+    caller that re-posts on reconnect to work around the old memory-only contract
+    will therefore DOUBLE-INJECT, since the restored copy and the re-post both
+    drain into the next message -- see docs/app-kit/api-reference.md.
     Appending mid-turn would take the row the replay path skips and cause the
     user's own request to be replayed; queueing the context mid-turn would let
     the turn already in flight drain it, so the note would shape the request it
@@ -10046,21 +10243,42 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
         if max_age is _UNSET:
             max_age = _NOTE_CONTEXT_MAX_AGE
         context_entry, err = _build_pending_context_entry(
-            slot, content, source, body.get("ephemeral", True), max_age
+            slot, content, source, max_age, body.get("ephemeral") is True
         )
         if err is not None:
             return err
         assert context_entry is not None
+        # Stamp the session BEFORE the budget check, for both arms. The key adds
+        # real bytes, and the deferred path used to be measured WITHOUT it: the
+        # unstamped entry fitted, the response said `contextSkipped: false`, and
+        # then the flush stamped it and the append refused — losing a context half
+        # the caller was told had been accepted. Measuring the entry in the shape it
+        # will actually be persisted in is the only honest accounting.
+        #
+        # Harmless to the promotion's late binding: `flush_deferred_notes`
+        # re-stamps with the session that is live AT FLUSH TIME, so this value is
+        # only a placeholder for sizing, never the authorization decision. The
+        # immediate arm below needs the same stamp anyway, so this hoists one line
+        # rather than adding one.
+        context_entry["noteSession"] = effective_session_key(slot)
+        # The queue also refuses what it could not PERSIST, and that refusal has to
+        # be resolved BEFORE the response is built. Ignoring it would answer 200
+        # with `contextSkipped: false` for a context half that was dropped, which
+        # is the one outcome the caller cannot detect or recover from. Reported
+        # through the same `contextSkipped` channel as the per-source cap: the
+        # visible line is still written, and the caller learns the context half
+        # did not land.
+        if not slot.pending_context_budget_room(context_entry):
+            context_skipped = True
+            context_entry = None
         # A held note's context is queued by the flush, not here. The drain runs
         # inside the turn and after its task is assigned, so an entry queued now
         # is read by the turn already running -- the note would shape the request
         # it was written after, and the next turn would find nothing.
-        if not deferred:
-            # Both immediate halves resolve their destination LATE, so each
-            # records the session it was authorized against -- same reason the
-            # deferred arm below does, and checked at those later seams.
-            context_entry["noteSession"] = effective_session_key(slot)
-            slot.append_pending_context(context_entry)
+        elif not deferred:
+            if not slot.append_pending_context(context_entry):
+                context_skipped = True
+                context_entry = None
 
     # Caller-controlled content reaching the visible transcript (SSE plus the
     # on-disk JSONL). Redact at this sink so a secret or exfil URL cannot land
@@ -10075,13 +10293,15 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
                 "content": visible_content,
                 "cls": "reconcile-note",
                 "context": context_entry,
-                # The session this note was authorized against. The gate above
-                # only admits a slot that still routes to its own session, but
-                # an unbound slot can acquire a foreign binding while the note
-                # is held, and the flush resolves its target late.
+                # The session this note was authorized against: an unbound slot can
+                # acquire a foreign binding while held, and the flush resolves late.
                 "session": effective_session_key(slot),
             }
         )
+        # This arm marks the slot dirty nowhere else, so without it the next save
+        # finds nothing owed and the held context half is never written.
+        if context_entry is not None:
+            slot._dirty = True
     else:
         slot.append(
             role="inject",

@@ -14,6 +14,7 @@ import uuid
 from collections import OrderedDict, deque
 from collections.abc import Iterator, Mapping
 from itertools import islice
+from pathlib import Path
 
 from kiro_crew import model_registry
 from kiro_crew.agent import kiro_agents_dir_path
@@ -32,7 +33,10 @@ from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
     _redact_meta_for_role,
     _sync_dashboard_slots,
+    audit_persisted_binding,
     effective_session_key,
+    persisted_binding_is_adoptable,
+    preaudit_persisted_binding,
     slot_history_key,
     slot_transcript_key,
 )
@@ -55,7 +59,10 @@ from kiro_crew.history import (
     carry_provenance,
     carry_unowned_metadata,
     latest_transcript_ts,
+    merge_pending_context,
+    same_transcript,
     transcript_sort_key,
+    transcript_stems,
     update_metadata_off_loop,
 )
 from kiro_crew.messaging.link import is_channel_session_key
@@ -88,6 +95,58 @@ _IDENTITY_UNRESOLVED: tuple[str, str] = ("", "__unresolved__")
 # here rather than imported to avoid dragging the chat_title import graph into
 # the persistence module's load path).
 _TITLE_ORIGINS = ("auto", "user")
+
+
+def _ctx_id_set(entries: object) -> set[str]:
+    """The ``ctxId`` set of *entries*, ignoring anything unidentified."""
+    if not isinstance(entries, list):
+        return set()
+    return {e["ctxId"] for e in entries if isinstance(e, dict) and isinstance(e.get("ctxId"), str)}
+
+
+def preserve_unaccounted_context(
+    exported: list[dict],
+    on_disk: object,
+    accounted_ids: set[str],
+    *,
+    final: bool = False,
+    archive_key: str = "",
+    archive_base: Path | None = None,
+) -> list[dict]:
+    """Union *on_disk* entries this slot never accounted for ahead of its own *exported* list.
+
+    ``pending_context`` is slot-owned, so OMITTING it from a save is what clears a delivered
+    queue, and that must stay true. But omission can only honestly speak for entries this
+    slot hydrated: one written by a same-key handover AFTER this slot hydrated is absent from
+    the export through ignorance rather than delivery, and the full save used to erase it. So
+    absence clears only an id in *accounted_ids*; anything else already on disk survives.
+
+    A ``ctxId`` that is not a plain string cannot be accounted for either way, so it is
+    preserved -- the fail-safe direction, since the alternative discards acknowledged content.
+
+    *final* forwards to :func:`merge_pending_context`, and the caller must set it whenever THIS
+    save is the slot's last -- ``closed`` OR ``rows_only``. *exported* sits on the deferrable
+    side of that union, so without the flag a terminal save defers the slot's own newest
+    acknowledged entry and nothing ever retries it. ``rows_only`` counts because its only
+    producer runs AFTER the slot is popped, which is why ``closed`` alone does not cover it.
+    """
+    if not isinstance(on_disk, list):
+        return list(exported)
+    unaccounted = [
+        e
+        for e in on_disk
+        if isinstance(e, dict)
+        and not (isinstance(e.get("ctxId"), str) and e["ctxId"] in accounted_ids)
+    ]
+    if not unaccounted:
+        return list(exported)
+    return merge_pending_context(
+        unaccounted,
+        exported,
+        final=final,
+        archive_key=archive_key,
+        archive_base=archive_base,
+    )
 
 
 def _rehydrate_title_origin(titled: bool, stored: object) -> str:
@@ -558,6 +617,7 @@ def _apply_restored_open_slot(
     member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
     conv_log: ConversationLog | None = None,
     started: float | None = None,
+    _binding_verdict: bool | None = None,
 ) -> int:
     """Turn one prefetched open-tab read into a slot; return 1 if it restored.
 
@@ -620,6 +680,7 @@ def _apply_restored_open_slot(
         _prefetched_meta=meta,
         _prefetched_messages=messages,
         _prefetched_member_identity=member_identity,
+        _binding_verdict=_binding_verdict,
     )
     return 1 if slot is not None else 0
 
@@ -712,6 +773,8 @@ async def restore_open_slots_async(state: DashboardState) -> int:
                     kiro_model_map=kiro_model_map,
                     with_status=True,
                 )
+                # Off the event loop, before the slot build; see the rehydrate path.
+                _verdict = await preaudit_persisted_binding(meta, slot_transcript_key(key))
                 restored += _apply_restored_open_slot(
                     state,
                     key,
@@ -726,6 +789,7 @@ async def restore_open_slots_async(state: DashboardState) -> int:
                     # its answers can have gone stale.
                     conv_log=conv_log,
                     started=started,
+                    _binding_verdict=_verdict,
                 )
             except Exception:
                 logger.debug("restore_open_slots: rehydrate failed for %s", key, exc_info=True)
@@ -799,6 +863,7 @@ def _rehydrate_slot_from_history(
     _prefetched_meta: dict | None = None,
     _prefetched_messages: list[dict] | None = None,
     _prefetched_member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
+    _binding_verdict: bool | None = None,
 ) -> _ChatSlot | None:
     """Rehydrate a single dashboard slot from persisted history.
 
@@ -935,6 +1000,7 @@ def _rehydrate_slot_from_history(
         # Legacy metadata has no ``created_at``: record the observation
         # itself so the guard's missing-file witness still fires for it.
         slot._disk_meta_observed = bool(meta)
+        slot._disk_meta_key = history_key
         # Member keys keep the binding-derived agent/mode: transcript metadata
         # is the operator-editable file the pin must not re-derive from.
         if meta.get("agent") and _member_identity is None:
@@ -1054,14 +1120,81 @@ def _rehydrate_slot_from_history(
             # Rebind the slot to the session its conversation actually runs on.
             # Skipped, the slot would answer from a dashboard-only session and the
             # channel thread would stop seeing its replies.
-            slot.linked_session_key = str(meta["linked_session_key"])
+            #
+            # Adopted ONLY when the persisted value names the transcript being
+            # hydrated. The metadata line is agent-writable, and this assignment
+            # decides where the slot ROUTES its turns and saves, so a
+            # different-but-valid key here would retarget it at another
+            # conversation. On mismatch the slot stays unbound, which is a visible
+            # and recoverable degradation.
+            _cand = str(meta["linked_session_key"])
+            # PRE-AUDITED OFF THE EVENT LOOP where the caller could do it, because the SEL
+            # write for a critical audit is inline and this build is await-free.
+            if _binding_verdict is not None:
+                _adoptable = _binding_verdict
+            else:
+                _adoptable = persisted_binding_is_adoptable(_cand, history_key)
+                # A trust decision on agent-writable metadata belongs in the signed
+                # audit trail, and an unrecorded decision may not be acted on.
+                if not audit_persisted_binding(history_key, _cand, adopted=_adoptable):
+                    _adoptable = False
+            if _adoptable:
+                slot.linked_session_key = _cand
+            else:
+                # OBSERVABLE, because nothing else makes it so. The degradation is
+                # recoverable but not self-announcing: an unbound slot answers from
+                # its own dashboard-only session, so a legitimate spelling this
+                # predicate does not enumerate would otherwise stop the channel
+                # thread seeing replies with no trace of why.
+                #
+                # The ACCEPTED spellings are logged with it, because the two
+                # diagnoses need different fixes and the message is the only place
+                # an operator can tell them apart: a candidate that looks like one
+                # of these is a closure gap in the predicate, and one that looks
+                # nothing like them is the foreign key the gate exists to refuse.
+                logger.warning(
+                    "not adopting persisted binding %r for %s: it does not name this "
+                    "transcript, so the slot stays unbound and answers from its own "
+                    "dashboard session (accepted spellings here: %s)",
+                    _cand,
+                    history_key,
+                    ", ".join(transcript_stems(history_key)),
+                )
+                # NO TRANSCRIPT ROW IS APPENDED HERE. A notice seated at this point
+                # lands BEFORE the historical replay finishes, so the next save
+                # orders it ahead of older messages, and nothing makes it
+                # idempotent -- every restore of this session would add another
+                # copy. The refusal is marked ONLY by the log line above and the SEL event;
+                # there is no slot-state record and no user-visible row for it.
         # Re-seed the live compaction threshold. The SessionManager's override
         # map is process-local, so a rehydrated slot must push its persisted
         # value back or the session silently compacts at the global threshold.
-        # After the link assignment above, so a channel-born slot seeds the
-        # session its turns actually run on.
+        # After the binding arm above, so a channel-born slot seeds the session
+        # its turns actually run on — including the unbound fallback, which is
+        # the session an unadopted binding leaves it answering from.
         if slot.autocompact_pct is not None and state.sessions:
             state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
+        # Re-seat undrained background context — AFTER the binding above, never
+        # before. `restore_pending_context` drops entries authorized against a
+        # different session, and it resolves "this session" through
+        # `effective_session_key`, which falls back to `dashboard:<name>` while
+        # `linked_session_key` is still unset. Restoring first therefore judged a
+        # cron- or channel-bound note against a temporary dashboard key and
+        # discarded valid queued context. This is the restart half of the pair;
+        # the History resume endpoint binds at `get_or_create_slot`, ahead of its
+        # own restore.
+        if meta.get("pending_context"):
+            slot.restore_pending_context(meta["pending_context"])
+            # Record WHICH transcript this queue was hydrated FROM. It is what the
+            # origin check in `_save_slot_to_history` compares against, so a save of
+            # this same transcript keeps held entries instead of filtering them out
+            # and deleting the only durable copy. The key is the one the metadata was
+            # READ from (``get_metadata(history_key)``), not the slot's current
+            # effective key, which a rebind may already have moved.
+            slot._ctx_persisted_key = history_key
+            slot.adopt_ctx_owner(history_key)
+            # And the digest of what that transcript holds, so a later save can tell
+            # its own committed bytes from another writer's.
         # Restore the persisted tab_id so cross-restart fork chaining survives.
         # get_or_create_slot (called by our caller) assigns a fresh random uuid to
         # slot._tab_id; if we don't overwrite it here, the next _flush_dirty_slots
@@ -1291,6 +1424,9 @@ async def rehydrate_slot_from_history_async(
     if messages is None:
         return None
     meta = _meta
+    # RESOLVED BEFORE THE RACE CHECKS BELOW: this await yields, so leaving it after them let a
+    # close or a concurrent resume land on answers already given, and neither is re-asked.
+    _verdict = await preaudit_persisted_binding(meta, history_key)
     # Tab-close race. The user can click ✕ while the read above is in flight.
     # The close pops the slot and records a tombstone synchronously on the loop,
     # but persists the ``closed`` flag only after its own awaits — so the
@@ -1337,6 +1473,7 @@ async def rehydrate_slot_from_history_async(
         _prefetched_meta=meta,
         _prefetched_messages=messages,
         _prefetched_member_identity=_member_id,
+        _binding_verdict=_verdict,
     )
 
 
@@ -1419,6 +1556,7 @@ def _apply_recent_session(
     kiro_model_map: dict[str, str],
     restore_cfg: "KiroCrewConfig | None",
     member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
+    _binding_verdict: bool | None = None,
 ) -> None:
     """Build the slot for one prefetched recent session.
 
@@ -1475,6 +1613,7 @@ def _apply_recent_session(
     # Legacy metadata has no ``created_at``: record the observation itself so
     # the guard's missing-file witness still fires for it.
     slot._disk_meta_observed = bool(meta)
+    slot._disk_meta_key = key
     # Member keys keep the binding-derived agent/mode: transcript metadata is
     # the operator-editable file the pin must not re-derive from.
     if meta.get("agent") and _member_identity is None:
@@ -1560,7 +1699,38 @@ def _apply_recent_session(
     if meta.get("forked_from") is not None:
         slot.forked_from = meta["forked_from"]
     if meta.get("linked_session_key"):
-        slot.linked_session_key = str(meta["linked_session_key"])
+        # Same trust gate as the other hydration sites: adopt only a persisted
+        # binding that names the transcript being applied, since this assignment
+        # decides where the slot's turns and saves land.
+        _cand = str(meta["linked_session_key"])
+        # Pre-audited off the event loop where the caller could, for the reason given
+        # at the rehydrate site: a critical SEL write is inline, this build is not.
+        if _binding_verdict is not None:
+            _adoptable = _binding_verdict
+        else:
+            _adoptable = persisted_binding_is_adoptable(_cand, key)
+            # Audited for the same reason as the rehydrate site above, and equally
+            # audit-or-deny: an unrecorded decision may not be acted on.
+            if not audit_persisted_binding(key, _cand, adopted=_adoptable):
+                _adoptable = False
+        if _adoptable:
+            slot.linked_session_key = _cand
+        else:
+            # Same message as the rehydrate site above, deliberately: the two
+            # refusals are the same decision on two paths, and an operator reading
+            # one should not have to learn a second wording. The accepted spellings
+            # are included for the reason given there.
+            logger.warning(
+                "not adopting persisted binding %r for %s: it does not name this "
+                "transcript, so the slot stays unbound and answers from its own "
+                "dashboard session (accepted spellings here: %s)",
+                _cand,
+                key,
+                ", ".join(transcript_stems(key)),
+            )
+            # NO TRANSCRIPT ROW HERE either -- same ordering and duplication
+            # reasons as the sibling refusal site, so the degradation is recorded
+            # on slot state, where ordering is not a constraint.
     elif is_channel_session_key(key) and state.sessions:
         # First time this thread is surfaced: bind it to the session the
         # channel itself runs. Resolved from the session map, never derived
@@ -1572,6 +1742,23 @@ def _apply_recent_session(
     # Re-seed the live compaction threshold (see _rehydrate_slot_from_history).
     if slot.autocompact_pct is not None and state.sessions:
         state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
+    # Re-seat undrained background context — AFTER both binding arms above. The
+    # restore drops entries authorized against another session, resolving "this
+    # session" via `effective_session_key`, which falls back to
+    # `dashboard:<name>` until `linked_session_key` is set. Restoring earlier
+    # judged a bound note against a temporary key and discarded it.
+    #
+    # Seating it on this path at all matters independently: `pending_context` is
+    # slot-owned, so a slot hydrated with an empty queue has its stored copy
+    # DELETED by the next forced save — a recent / foldered / pinned session
+    # would lose context rather than merely fail to restore it.
+    if meta.get("pending_context"):
+        slot.restore_pending_context(meta["pending_context"])
+        # Record the transcript this queue was hydrated FROM, so a later save of that
+        # same transcript keeps its held entries; see the note at the rehydrate site.
+        # ``key`` is what ``get_metadata`` was called with here.
+        slot._ctx_persisted_key = key
+        slot.adopt_ctx_owner(key)
     tab_id = meta.get("tab_id")
     if not tab_id:
         tab_id = uuid.uuid4().hex[:12]
@@ -1754,6 +1941,9 @@ async def restore_recent_sessions_async(
             # after its own hop, and the open-tab driver inherits the ``_slots``
             # half from ``_rehydrate_slot_from_history``'s internal re-check. This
             # is the one converted surface that has to spell both out.
+            # RESOLVED BEFORE THE RACE CHECKS BELOW, for the reason the rehydrate path states:
+            # an await placed after them lets a close or publish land on a stale answer.
+            _verdict = await preaudit_persisted_binding(meta, key)
             if slot_name in state._slots:
                 logger.debug(
                     "Restore skipped: session %s was published while its " "transcript loaded",
@@ -1790,6 +1980,7 @@ async def restore_recent_sessions_async(
                 kiro_model_map=kiro_model_map,
                 restore_cfg=_restore_cfg,
                 member_identity=_member_id,
+                _binding_verdict=_verdict,
             )
             restored += 1
             await asyncio.sleep(0)
@@ -2525,6 +2716,42 @@ def _frozen_prefix_and_foreign_appends(
     return (prefix, foreign, dedup_dropped)
 
 
+def _disk_identity_applies_to(slot: _ChatSlot, key: str) -> bool:
+    """Whether the slot's observed disk identity describes *key*'s transcript.
+
+    A STEM-SET INTERSECTION, deliberately not string equality. One transcript
+    answers to more than one key spelling -- ``ConversationLog._path`` falls back
+    to a Slack thread's bare ``thread_ts`` stem, which is the rule
+    :func:`transcript_stems` enumerates -- so a restore that recorded a folded or
+    legacy spelling and a save that uses the canonical one name the SAME FILE
+    while comparing unequal.
+
+    Under equality that mismatch reads as "never observed here", which DISABLES
+    the delete-won guard: a concurrent permanent deletion is no longer witnessed
+    and the save RECREATES the deleted transcript. Any shared spelling therefore
+    counts as possibly-the-same-file and the identity applies -- the same
+    conservative direction, and the same ``transcript_stems`` rule, the origin check
+    in ``_save_slot_to_history`` uses for the mirror-image decision.
+
+    The rebind case this pairing was introduced for is unaffected: a slot moved
+    from ``dashboard:<name>`` to ``cron:<job>`` shares no stem, so the sets are
+    disjoint and the stale identity is still correctly withheld.
+
+    An UNRECORDED key answers TRUE, and that direction is load-bearing. Absence of
+    a key is not evidence the observation describes a different file -- it is no
+    evidence either way -- so withholding on it would DISABLE the delete-won guard
+    for every slot that observed metadata without recording a key, which is exactly
+    the legacy-metadata path (no ``created_at``, so the observation BIT is the only
+    evidence there). Only a key that IS recorded and shares no stem withholds.
+    """
+    observed = str(getattr(slot, "_disk_meta_key", "") or "")
+    if not observed:
+        return True
+    if not key:
+        return False
+    return same_transcript(observed, key)
+
+
 def _save_slot_to_history(
     state: DashboardState,
     slot: _ChatSlot,
@@ -2697,6 +2924,19 @@ def _save_slot_to_history(
     kept = [m for m in window if not _note_authorized_elsewhere(m.get("meta"), note_auth_key)]
     dropped_notes = len(window) - len(kept)
     window = kept
+    # NOTHING IS RETIRED FROM THE PREVIOUS TRANSCRIPT HERE. A rebind changes what
+    # `slot_history_key` returns, so a copy already committed to the OLD transcript
+    # is never touched again by later saves and stays there. An earlier shape cleared
+    # it after the replacement committed; that path was REMOVED because its two
+    # metadata writes are not one atomic unit, so a crash between them left both
+    # transcripts holding the queue and both injecting it on restore. See the note at
+    # the end of `_save_slot_to_history`, where it used to run, for the full trade.
+    #
+    # The local below records only WHETHER this save committed a context payload,
+    # which is this function's return value. The digest that used to sit beside it
+    # was deleted with the retirement: nothing read it once the compare-and-clear
+    # was gone.
+    _ctx_committed = False
     if dropped_notes:
         # Count-gated exactly like the drain's own denial at state.py:2320. This is
         # the PERIODIC save path, so an ungated emit would record a denial on every
@@ -2723,7 +2963,75 @@ def _save_slot_to_history(
             dropped_notes,
             note_auth_key,
         )
-    if not window:
+    # ``isinstance(..., list)`` is load-bearing, not defensive noise: this guard
+    # decides CONTROL FLOW, and a stand-in slot (a MagicMock, as several suites
+    # use) auto-creates every attribute as a truthy Mock. Testing truthiness alone
+    # would therefore skip this early return for such a slot, run the save on past
+    # where it has always stopped, and raise into the best-effort wrapper -- which
+    # swallows it and marks the slot dirty, so the caller sees a successful save
+    # that persisted nothing. Only a real, non-empty queue may widen the return.
+    # HELD ENTRIES SURVIVE A WRITE OF THEIR OWN ORIGIN. Computed ONCE here because
+    # BOTH writers need it: the metadata-only partial save in `_fresh_fields` below,
+    # and the full save further down. The foreign filter is right for a REBOUND
+    # target -- copying another session's stamped content there is the isolation
+    # breach it exists to stop -- but these saves also write the transcript the
+    # entries CAME FROM, and filtering them there deletes the only durable copy on a
+    # close. Origin is `_ctx_persisted_key`, the transcript the queue was hydrated
+    # from, compared as stem SETS because two distinct key STRINGS can name the SAME
+    # transcript file (`slack:C1:1.2` and `slack:C1_1.2` both land in
+    # `slack_C1_1.2.jsonl`), so an equality compare would read "different transcript"
+    # when nothing moved and drop the only durable copy.
+    _held_ctx = getattr(slot, "_ctx_held_foreign", None) or []
+    _origin_ctx_key = str(getattr(slot, "_ctx_persisted_key", "") or "")
+    _writing_origin = bool(_origin_ctx_key) and same_transcript(_origin_ctx_key, history_key)
+    # SINGLE OWNER, PER ENTRY. Suppressing the whole queue also discarded entries
+    # queued AFTER a rebind, which have no durable copy anywhere.
+    _suppress_origin = bool(_origin_ctx_key) and not _writing_origin
+    _owner_of = getattr(slot, "ctx_owner_of", None)
+    _origin_ids = getattr(slot, "_ctx_origin_ids", None)
+    if not isinstance(_origin_ids, set):
+        _origin_ids = set()
+    # WIDER THAN THE PREVIOUS SAVE'S COMMITTED SUBSET: after an A->B rebind ``_ctx_origin_ids``
+    # no longer names an entry THIS transcript owns, so its retirement read as ignorance.
+    _accounted_ids: set[str] = set(_origin_ids)
+    _ctx_archive_base = state.conversation_log._dir if state.conversation_log else None
+    _owner_map = getattr(slot, "_ctx_owner_by_id", None)
+    if isinstance(_owner_map, dict):
+        _accounted_ids |= {
+            _cid
+            for _cid, _owner in _owner_map.items()
+            if isinstance(_cid, str)
+            and isinstance(_owner, str)
+            and _owner
+            and same_transcript(_owner, history_key)
+        }
+    # Narrowed at each point this slot's own export is computed, so the accounted-for set
+    # recorded after the write never claims another holder's merged entries.
+    _own_ctx_ids: set[str] = set()
+
+    def _ctx_owned_by_old_origin(entry: object) -> bool:
+        """True when *entry*'s durable copy lives on a DIFFERENT transcript.
+
+        Asked per ENTRY against the ownership map, not against one origin key: after a
+        chained rebind A->B->C the single key names only C, so B's entries read as
+        unowned and get copied through C while B's copy remains -- the same content
+        injected twice. The map keeps each ``ctxId``'s real owner.
+        """
+        if not isinstance(entry, dict):
+            return False
+        if callable(_owner_of):
+            _owner = _owner_of(entry)
+            if isinstance(_owner, str) and _owner:
+                return not same_transcript(_owner, history_key)
+        if not _suppress_origin:
+            return False
+        if not isinstance(entry.get("ctxId"), str):
+            # Unidentifiable, so indistinguishable from the old copy: do not duplicate.
+            return True
+        return entry["ctxId"] in _origin_ids
+
+    _queued_context = getattr(slot, "_pending_context", None)
+    if not window and not (isinstance(_queued_context, list) and _queued_context):
         if force or closed:
             # A FORCED (or closing) save of a message-less slot is a metadata
             # mutation (folder filing/unfiling, a tag assignment, a pin, a
@@ -2751,7 +3059,7 @@ def _save_slot_to_history(
             # (unfiled / untagged / unpinned / untitled / default mode). Fails
             # closed on an unreadable record, per `update_metadata_if`'s own
             # contract.
-            def _fresh_fields() -> dict:
+            def _fresh_fields(on_disk_ctx: object = None) -> dict:
                 # Mirrors the FULL save's slot-owned enumeration (the
                 # ``meta_line`` construction below), so a forced save of an
                 # empty slot persists exactly what a forced save of a
@@ -2769,6 +3077,50 @@ def _save_slot_to_history(
                 #   truthy, exactly like the full save (origin's fail-closed
                 #   sentinel and the once-flags must never be erased by a
                 #   writer that has not learned them).
+                # `pending_context` is slot-owned, so this merge MUST refresh it.
+                # The full save rewrites the whole line and lets ABSENCE mean
+                # cleared; `update_metadata_if` MERGES and cannot delete a key, so
+                # omitting it here would leave an already-drained queue alive on
+                # disk and re-inject it on restart -- the silent loss this
+                # persistence exists to stop, arriving through the one save path
+                # that writes no window. Clearable class, written even when empty:
+                # rehydrate gates on a TRUTHY `pending_context`, so `[]` reads as
+                # cleared. Filtered by the same foreign-authorization rule the full
+                # save applies, because a note stamps BOTH halves and a slot
+                # rebound after the write must not persist the queued half into the
+                # session it now routes to. `isinstance` for the reason the outer
+                # guard documents: a stand-in slot auto-creates a truthy Mock for
+                # every attribute, and a Mock here would persist unserializable
+                # junk instead of a queue.
+                # GENERATION RE-CHECK, the same invariant the full save applies
+                # beside its own write. This runs in an executor thread while the
+                # drain runs on the event loop, so an export taken here can already
+                # name entries handed to the model: a drain committing between the
+                # export and the metadata write would persist CONSUMED context, and
+                # the next restart would inject it a second time. In-flight entries
+                # are the reachable case -- the branch guard above tests only the LIVE
+                # queue, while this export also returns `_ctx_inflight`.
+                #
+                # RE-EXPORT rather than drop the key, for the reason the full save
+                # gives: a producer may have APPENDED in the same window and that
+                # entry has been delivered to nobody, so clearing would trade a
+                # double-injection bug for a loss bug.
+                #
+                # Bounded, and this is the latest point it CAN run: `_fresh_fields` is
+                # called from the guard `update_metadata_if` invokes immediately before
+                # writing, so no later hook exists to re-check from. Each pass observes
+                # a strictly newer generation, so the loop converges; the cap only
+                # stops a pathological interleaving from spinning. The residual is the
+                # one the full save also documents -- a drain landing inside the write
+                # itself, which the atomic replace keeps all-or-nothing.
+                _merged_ctx: object = []
+                for _ in range(3):
+                    _gen_at_export = getattr(slot, "_pending_context_gen", None)
+                    _merged_ctx = slot.export_pending_context()
+                    if getattr(slot, "_pending_context_gen", None) == _gen_at_export:
+                        break
+                if not isinstance(_merged_ctx, list):
+                    _merged_ctx = []
                 fields: dict = {
                     "folder_id": slot.folder_id or "",
                     "tags": list(slot.tags),
@@ -2786,6 +3138,24 @@ def _save_slot_to_history(
                     # so the override is CLEARABLE: written even when None,
                     # like the other clearable fields above.
                     "autocompact_pct": slot.autocompact_pct,
+                    # PRESERVED like the full save: writing only this slot's export erased a
+                    # same-key replacement's queue. `on_disk_ctx` is the caller's locked read.
+                    "pending_context": preserve_unaccounted_context(
+                        [
+                            e
+                            for e in _merged_ctx
+                            if (
+                                not _note_authorized_elsewhere(e, note_auth_key)
+                                or (_writing_origin and e in _held_ctx)
+                            )
+                            and not _ctx_owned_by_old_origin(e)
+                        ],
+                        on_disk_ctx,
+                        _accounted_ids,
+                        final=closed or rows_only,
+                        archive_key=history_key,
+                        archive_base=_ctx_archive_base,
+                    ),
                 }
                 if slot.title and slot.title != slot.key:
                     fields["title"] = slot.title
@@ -2880,7 +3250,7 @@ def _save_slot_to_history(
                 if not meta:
                     return False
                 merged_fields.clear()
-                merged_fields.update(_fresh_fields())
+                merged_fields.update(_fresh_fields(meta.get("pending_context")))
                 return True
 
             applied = state.conversation_log.update_metadata_if(
@@ -2903,6 +3273,11 @@ def _save_slot_to_history(
                     f"empty-window metadata merge skipped: record unreadable for {history_key}"
                 )
         return True
+    # A slot with NO messages but a non-empty context queue must still reach the
+    # metadata write below: `/context` accepted that content with a 200 before any
+    # message existed, and returning here would discard it on close — the same
+    # silent loss this persistence exists to stop, in the one shape where the
+    # transcript offers no other trace of it.
     # Skip a pure no-op: a freshly resumed slot with no new AND no edited
     # messages. ``slot._dirty`` is set by both append and in-place edits
     # (update_message / _resolve_stop_event / file-change + mcp_oauth patches),
@@ -2982,14 +3357,33 @@ def _save_slot_to_history(
             # best-effort re-armed), and a restored ZERO-message session has
             # all-zero counters while its delete must still win against the
             # save of its first message.
-            _known = slot._disk_meta_created_at
-            # ``created_at`` is the identity, but legacy metadata carries none
-            # — the observation BIT is the evidence there, so a save racing a
-            # permanent delete cannot recreate a legacy transcript through the
-            # "no identity recorded" gap. The missing-file witness needs only
-            # the observation; the identity COMPARISON below still needs the
-            # recorded ``created_at``.
-            if _known or slot._disk_meta_observed:
+            # CONSULTED ONLY FOR THE FILE IT DESCRIBES, matched on STEM SETS rather
+            # than key equality. The identity is per-file, and a rebind moves where
+            # this slot saves: a cron or workflow binding an unbound slot repoints
+            # `history_key` at a different transcript, whose `created_at`
+            # legitimately differs from the one observed on the old file. Read
+            # unpaired, that difference is indistinguishable from "deleted and
+            # recreated", so the guard would abort the save -- and keep aborting,
+            # since only a committed save re-records the identity.
+            #
+            # Equality was the wrong test: two spellings of ONE transcript compare
+            # unequal, which would read as "never observed here" and DISABLE this
+            # guard, letting a save recreate a concurrently deleted transcript.
+            # `_disk_identity_applies_to` intersects stem sets, so any shared
+            # spelling keeps the identity in force; genuinely disjoint keys (the
+            # rebind case) still withhold it, which is the same no-evidence state
+            # as a fresh slot, and the first committed save re-pairs both.
+            _applies = _disk_identity_applies_to(slot, history_key)
+            _known = slot._disk_meta_created_at if _applies else ""
+            # ``created_at`` is the identity, but legacy metadata carries none — the
+            # observation BIT is the evidence there, so a save racing a permanent
+            # delete cannot recreate a legacy transcript through the "no identity
+            # recorded" gap. The missing-file witness needs only the observation; the
+            # identity COMPARISON below still needs the recorded ``created_at``. The
+            # bit is paired with the same applies-to test, because an observation
+            # made on ANOTHER transcript is no evidence about this one -- unpaired it
+            # would re-open the rebind case above in boolean form.
+            if _known or (_applies and slot._disk_meta_observed):
                 try:
                     path.stat()
                 except FileNotFoundError:
@@ -3077,6 +3471,71 @@ def _save_slot_to_history(
                 # save-time fallback covers callers with no user gesture to
                 # anchor to (and legacy call sites).
                 meta_line["closed_at"] = closed_at if closed_at is not None else time.time()
+            # Undrained background context, so a close (or a crash between the
+            # enqueue and the next user message) no longer silently discards it.
+            # `_pending_context` is otherwise in-memory only, and the close pops
+            # the slot, so a producer told "accepted" by /context or /note lost
+            # its content with no trace on any surface.
+            #
+            # Written on EVERY save, not just `closed`: the key is slot-owned, so
+            # a save that omitted it would CLEAR a copy an earlier close wrote.
+            # Writing it unconditionally also covers a crash, not just a graceful
+            # close. Omitted entirely when empty so an ordinary session's
+            # metadata line is unchanged — which is also what CLEARS the
+            # persisted copy once the next user message drains the queue.
+            #
+            # Filtered by the SAME foreign-authorization rule this function
+            # already applies to the message window above, and for the same
+            # reason: a note stamps BOTH halves, so a slot rebound after the
+            # write must not persist the queued half into the session it now
+            # routes to. Dropping the visible row while persisting its queued
+            # twin would leave the content copied and unaudited.
+            _pending_gen_at_export = slot._pending_context_gen
+            _exported_context = slot.export_pending_context()
+            _live_pending_context = [
+                e
+                for e in _exported_context
+                if (
+                    not _note_authorized_elsewhere(e, note_auth_key)
+                    or (_writing_origin and e in _held_ctx)
+                )
+                and not _ctx_owned_by_old_origin(e)
+            ]
+            _dropped_ctx = len(_exported_context) - len(_live_pending_context)
+            if _dropped_ctx:
+                # Count-gated for the same reason as the message-window denial
+                # above, and never able to fail an otherwise-correct save.
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="note_save_drop",
+                    outcome="denied",
+                    source="app_isolation",
+                    resources=f"slot={slot.key} queued_dropped={_dropped_ctx}",
+                    error="slot was rebound to another session after the note was written",
+                )
+            # THIS SLOT'S OWN ids, captured BEFORE any union: claiming another holder's merged
+            # entries would let a later save read their absence as a delivery clear.
+            _own_ctx_ids = _ctx_id_set(_live_pending_context)
+            # A same-key handover can add entries AFTER this slot hydrated, so absence from
+            # this export is ignorance rather than delivery. Absence clears only what it owns.
+            _live_pending_context = preserve_unaccounted_context(
+                _live_pending_context,
+                existing_meta.get("pending_context"),
+                _accounted_ids,
+                final=closed or rows_only,
+                archive_key=history_key,
+                archive_base=_ctx_archive_base,
+            )
+            if _live_pending_context:
+                meta_line["pending_context"] = _live_pending_context
+            # NOTE: the digest and the marker are deliberately NOT set here. This
+            # `meta_line` is not yet the committed payload: the generation re-check
+            # just before `atomic_write` can REPLACE `pending_context` with a freshly
+            # exported list (or drop it) when a drain or append lands during the save.
+            # Recording the digest from `_live_pending_context` here would describe a
+            # payload that was never written, so the rebind's compare-and-clear would
+            # never match and would leave a duplicate in the old session. Both are set
+            # from the FINAL `meta_line` once the write has committed.
             meta_line["memory_mode"] = slot.memory_mode
             if slot.title and slot.title != slot.key:
                 meta_line["title"] = slot.title
@@ -3243,6 +3702,9 @@ def _save_slot_to_history(
             # rewrites them, so that loss is permanent.
             own_tab_id = getattr(slot, "_tab_id", "") or ""
             line_is_this_slots = bool(own_tab_id) and existing_meta.get("tab_id") == own_tab_id
+            #: The holder's on-disk queue on a ROWS-ONLY save, else None. Read by the late
+            #: generation re-check, whose export covers this slot alone.
+            _holder_ctx: object = None
             if rows_only and existing_meta and not line_is_this_slots:
                 # A rows-only write does not own the slot-owned fields: the line
                 # describes whichever OTHER live slot published it, and this one is
@@ -3257,9 +3719,27 @@ def _save_slot_to_history(
                 # line because with none there is no other writer to defer to and
                 # the slot's own state is all there is — and that is the branch below,
                 # where the open-shaped write still clears a stale ``closed``.
+                # QUEUED CONTEXT IS UNIONED, never deferred: it is content the API
+                # acknowledged for THIS slot and has no other durable home on this file.
+                _mine_ctx = meta_line.get("pending_context")
                 for meta_key in ROWS_ONLY_DEFERRED_META_KEYS:
                     meta_line.pop(meta_key, None)
                 carry_unowned_metadata(meta_line, existing_meta, ROWS_ONLY_OWNED_META_KEYS)
+                # KEPT FOR THE LATE RE-CHECK, which re-exports THIS slot only: without the
+                # holder's side it would assign a slot-only list over this union.
+                _holder_ctx = meta_line.get("pending_context")
+                _own_ctx_ids = _ctx_id_set(_mine_ctx)
+                _merged_ctx_line = merge_pending_context(
+                    _holder_ctx,
+                    _mine_ctx,
+                    final=closed or rows_only,
+                    archive_key=history_key,
+                    archive_base=_ctx_archive_base,
+                )
+                if _merged_ctx_line:
+                    meta_line["pending_context"] = _merged_ctx_line
+                else:
+                    meta_line.pop("pending_context", None)
             else:
                 carry_unowned_metadata(meta_line, existing_meta, SLOT_OWNED_META_KEYS)
             meta_str = json.dumps(meta_line) + "\n"
@@ -3375,7 +3855,96 @@ def _save_slot_to_history(
                 except OSError:
                     _preserve_mtime = None
 
+            # GENERATION RE-CHECK, adjacent to the write and deliberately the ONLY
+            # one on this path. The export ran earlier in this executor thread
+            # while the drain runs on the event loop, so the exported copy can name
+            # entries already handed to the model by the time the bytes land, and a
+            # crash before the next save would re-inject them. An earlier revision
+            # also checked this just before `meta_str` was serialized, ~110 lines
+            # and a disk read (the frozen prefix) above here; that copy was removed
+            # because it ran on the same condition and could only drift from this
+            # one, while this derivation is the one that reaches the written bytes.
+            #
+            # RE-DERIVED rather than merely re-checked: a producer may have APPENDED
+            # in the gap, and that entry has been delivered to nobody, so deleting
+            # the key outright would trade a double-injection bug for a loss bug.
+            # Take a fresh snapshot instead (re-filtered for foreign authorization)
+            # and remove the key only when the queue is genuinely empty.
+            # `payload` begins with `meta_str` and is never reassigned between its
+            # assembly and here, so the metadata line is spliced rather than the
+            # whole payload rebuilt.
+            #
+            # This narrows the window to the interval between this derivation and
+            # the write itself. It does not mathematically eliminate it: doing that
+            # would require the CONSUMPTION to be durable before the drained text
+            # reaches the model, which is a larger design change than this PR — so
+            # the residual is a crash inside `atomic_write`, which the atomic
+            # rename already makes all-or-nothing at the file level.
+            if slot._pending_context_gen != _pending_gen_at_export:
+                # HELD MEMBERSHIP IS RE-READ, not taken from the pre-write snapshot: a
+                # transfer landing after it would drop an entry that is now held.
+                _held_now = getattr(slot, "_ctx_held_foreign", None) or []
+                _final_ctx = [
+                    e
+                    for e in slot.export_pending_context()
+                    if (
+                        not _note_authorized_elsewhere(e, note_auth_key)
+                        or (_writing_origin and (e in _held_ctx or e in _held_now))
+                    )
+                    and not _ctx_owned_by_old_origin(e)
+                ]
+                # RE-UNIONED, not assigned: this export is THIS SLOT's queue only, so on a
+                # rows-only save assigning it drops the holder's acknowledged context.
+                _own_ctx_ids = _ctx_id_set(_final_ctx)
+                if _holder_ctx is not None:
+                    _final_ctx = merge_pending_context(
+                        _holder_ctx,
+                        _final_ctx,
+                        final=closed or rows_only,
+                        archive_key=history_key,
+                        archive_base=_ctx_archive_base,
+                    )
+                # RE-APPLIED HERE TOO. This re-export replaces the line built earlier, so the
+                # guard run before it does not carry: a co-holder popped in the gap is unaccounted.
+                _final_ctx = preserve_unaccounted_context(
+                    _final_ctx,
+                    existing_meta.get("pending_context"),
+                    _accounted_ids,
+                    final=closed or rows_only,
+                    archive_key=history_key,
+                    archive_base=_ctx_archive_base,
+                )
+                if _final_ctx:
+                    meta_line["pending_context"] = _final_ctx
+                else:
+                    meta_line.pop("pending_context", None)
+                _final_meta_str = json.dumps(meta_line) + "\n"
+                if _final_meta_str != meta_str:
+                    payload = _final_meta_str + payload[len(meta_str) :]
+                    meta_str = _final_meta_str
             atomic_write(path, payload, fsync=True)
+            # RECORD WHAT ACTUALLY COMMITTED. `meta_line` is final here: the
+            # generation re-check above has already spliced any freshly exported
+            # payload into it, so this digest describes the bytes on disk rather than
+            # the pre-write snapshot.
+            _committed_ctx = meta_line.get("pending_context") or []
+            # WHERE the durable copy lives, and WHICH entries it holds, which is what
+            # splits a mixed queue after a later rebind.
+            _committed_ids = {
+                e["ctxId"]
+                for e in _committed_ctx
+                if isinstance(e, dict) and isinstance(e.get("ctxId"), str)
+            }
+            # PER COMMITTED SUBSET, on every save: these bytes ARE now this transcript's
+            # durable copy, so a later rebind must see this owner, not an older key.
+            _record = getattr(slot, "record_ctx_committed", None)
+            if callable(_record):
+                _record(history_key, _committed_ids)
+            if not _suppress_origin:
+                slot._ctx_persisted_key = history_key if _committed_ctx else ""
+                # THIS SLOT'S OWN committed entries. `_committed_ids` also carries another
+                # holder's merged ids, whose later absence would read as a delivery clear.
+                slot._ctx_origin_ids = _own_ctx_ids & _committed_ids
             if _preserve_mtime is not None:
                 try:
                     os.utime(path, (_preserve_mtime, _preserve_mtime))
@@ -3454,6 +4023,9 @@ def _save_slot_to_history(
                 # writes — even when the carried-forward metadata is legacy and
                 # has no ``created_at`` for the identity string above.
                 slot._disk_meta_observed = True
+                # WHICH transcript the four witnesses above describe, so a reader can
+                # tell an observation of ITS file from one made before a rebind.
+                slot._disk_meta_key = history_key
                 slot._frozen_prefix_cache = _post_write_cache
             else:
                 logger.warning(
@@ -3464,10 +4036,24 @@ def _save_slot_to_history(
                 )
             state.conversation_log._invalidate_cache(history_key)
             state.conversation_log.note_tab_id(history_key, tab_id)
-            return True
+            _ctx_committed = True
     except Exception:
         logger.error("Failed to save slot %s to history", slot.key, exc_info=True)
         raise
+    # NO CROSS-TRANSCRIPT RETIREMENT RUNS HERE, DELIBERATELY. A rebind used to clear
+    # the old transcript's copy once the replacement committed, but the two metadata
+    # writes are not one atomic unit: a crash between them left BOTH transcripts
+    # holding the same queue, and both injected it on restore. Clearing was also the
+    # only arm in this function that could destroy acknowledged content outright.
+    #
+    # Removing it collapses the residual failure to a plain duplicate on the old
+    # transcript -- deterministic instead of crash-window-dependent, recoverable
+    # where a deletion is not, and the same direction every other guard here fails.
+    # The marker pair advances inside the lock above, so a later rebind still
+    # compares against this slot's own bytes. A crash-atomic handoff needs a
+    # two-key transaction the metadata store does not offer; until it does, the
+    # duplicate is the honest trade.
+    return _ctx_committed
 
 
 def session_was_deleted(state: DashboardState, slot: _ChatSlot) -> bool:
@@ -3509,10 +4095,21 @@ def session_was_deleted(state: DashboardState, slot: _ChatSlot) -> bool:
     # ``_resumed_count`` optimistically after a best-effort save that may have
     # failed, and a restored zero-message session has all-zero counters).
     known = str(getattr(slot, "_disk_meta_created_at", "") or "")
-    # Same widening as the guard: legacy metadata records no ``created_at``,
-    # so the observation BIT carries the evidence there — the missing-file
-    # stat below is the legacy delete witness, while the identity comparison
-    # at the tail still requires the recorded ``known``.
+    # Same pairing rule as the guard, and the same STEM-SET test: an identity
+    # observed under a different transcript describes a different file, so
+    # consulting it here would report a healthy rebound slot as deleted and refuse
+    # the copy indefinitely. Key equality would be too narrow in the other
+    # direction -- two spellings of one transcript would read as unrelated and
+    # silently disable this probe, so a deleted conversation could be republished
+    # from the surviving in-memory window.
+    if not _disk_identity_applies_to(slot, slot_history_key(slot)):
+        return False
+    # Same widening as the guard: legacy metadata records no ``created_at``, so
+    # the observation BIT carries the evidence there — the missing-file stat
+    # below is the legacy delete witness, while the identity comparison at the
+    # tail still requires the recorded ``known``. Read only AFTER the applies-to
+    # gate above, so an observation made on another transcript cannot stand in
+    # for one on this file.
     if not known and not bool(getattr(slot, "_disk_meta_observed", False)):
         return False
     path_fn = getattr(state.conversation_log, "_path", None)

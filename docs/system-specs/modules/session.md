@@ -800,7 +800,19 @@ state a close compensates is not all scoped the same way.
   conversation's own MONOTONE once-flags (`auto_tagged`, `human_seen`,
   `channel_origin`, `channel_folder_filed`) are set and never cleared, so two writers
   on one transcript cannot disagree about them in a way that outlives the pair; they
-  stay as written. Deferring to disk is deliberately not
+  stay as written. `pending_context` is the ONE slot-owned key the rows-only write does not
+  defer. It falls inside `ROWS_ONLY_DEFERRED_META_KEYS` by construction, being the difference
+  of a set it belongs to, but deferring it would drop queued entries the API already answered
+  200 for and which have no other durable home on that file — so the branch UNIONS instead,
+  disk copy first, deduped by each entry's `ctxId`. Its ownership is otherwise ordinary, and
+  deliberately so: omitting the key is what durably empties a delivered queue, which is why it
+  cannot simply be carried forward. That leaves one asymmetry the full save has to respect —
+  omission may only speak for entries this slot actually hydrated, tracked per slot as the
+  accounted-for `ctxId` set. An entry a same-key handover wrote AFTER this slot hydrated is
+  absent from its export through ignorance rather than delivery, so the full save preserves it
+  rather than reading its absence as a clear; and the accounted-for set records this slot's OWN
+  committed ids only, never the merged line's, or another holder's entry would be claimed and
+  then cleared on the next save. Deferring to disk is deliberately not
   the same as deriving the line from the replacement — a recreate that published
   nothing has no metadata to protect, and re-deriving from it would ERASE a real
   title and filing the two slots' shared conversation has; leaving the line alone is

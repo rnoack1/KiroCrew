@@ -170,6 +170,14 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "last_consolidated",
         "closed",
         "closed_at",
+        # Undrained background-context entries, so closing a tab (or a gateway
+        # restart) no longer silently discards them. Slot-owned BECAUSE absence
+        # must clear: the queue is drained by the next user message, and a save
+        # after that drain omits the key — which is how the persisted copy is
+        # retired. That is also why the save writes it on EVERY save and not
+        # only on close: a non-close save that omitted the key would clear a
+        # copy persisted by an earlier close.
+        "pending_context",
         "memory_mode",
         "title",
         "agent",
@@ -276,6 +284,183 @@ ROWS_ONLY_OWNED_META_KEYS: frozenset[str] = frozenset({"_type", "created_at", "l
 ROWS_ONLY_DEFERRED_META_KEYS: frozenset[str] = (
     SLOT_OWNED_META_KEYS - ROWS_ONLY_OWNED_META_KEYS
 ) | frozenset({"title_origin", "title_refresh_mark", "created_by", "origin"})
+
+
+def _dedupe_key(entry: dict) -> object | None:
+    """A hashable identity for an entry carrying no ``ctxId``, or None if there is none.
+
+    Returning None means "cannot compare this one", and the caller then KEEPS it
+    undeduplicated -- never drops it, because a duplicate costs one repeated injection
+    while a drop loses content the API acknowledged.
+
+    Only scalars are admitted. A hand-edited metadata line can carry a list or dict in
+    ``content``, and an unhashable member makes the tuple unhashable, which raises where
+    it is used as a set member rather than at construction.
+    """
+    parts = (entry.get("content"), entry.get("injectedAt"), entry.get("source"))
+    if all(part is None or isinstance(part, (str, int, float, bool)) for part in parts):
+        return parts
+    return None
+
+
+def merge_pending_context(
+    disk: object,
+    mine: object,
+    *,
+    final: bool = False,
+    archive_key: str = "",
+    archive_base: Path | None = None,
+) -> list[dict]:
+    """Union two holders' queued context, the on-disk copy first.
+
+    A ROWS-ONLY save writes one slot's rows onto a transcript whose metadata line describes a
+    DIFFERENT live slot, and ``pending_context`` is inside :data:`ROWS_ONLY_DEFERRED_META_KEYS`
+    by construction. Deferring it drops content the API acknowledged for the WRITING slot --
+    it has no other durable home on that file -- while overwriting would drop the holder's.
+    Both are acknowledged and the line can carry both, so the union loses neither, and the
+    restore side parks entries stamped for another session rather than injecting them.
+
+    Deduplicated by ``ctxId`` where present, else by content/stamp/source, so repeated
+    rows-only saves re-union their own output without growing it.
+
+    BOUNDED BY THE AGGREGATE, because per-slot admission cannot see the other holder: each
+    queue is admitted against its own cap, so a union of enough holders exceeds what one
+    metadata line may carry, and ``_maybe_rotate`` can only drop MESSAGE lines -- never the
+    metadata one -- so the overflow destroys real transcript rows instead.
+
+    THE TWO SIDES ARE NOT INTERCHANGEABLE, and that is what makes the bound safe. The ON-DISK
+    side is kept unconditionally: this file's line is its ONLY home, so dropping one of those
+    entries destroys it with no recovery. Only the WRITING slot's own additions are gated, and
+    gating them DEFERS rather than loses -- a save does not clear ``_pending_context`` (only
+    ``drain_pending_context`` does), so a deferred entry stays queued in memory and is retried
+    by the next save, by which time expiry and drains have freed room on the holder's side.
+
+    *final* SUSPENDS THE DEFERRAL, and must be set by a CLOSE save. The deferral's entire
+    safety argument is that a later save retries it; on close there is no later save and the
+    slot is going away, so deferring there would silently and permanently discard content a
+    200 acknowledged. On that one path the writer's entries are in the same position as the
+    on-disk ones -- no other home -- so instead of being deferred, any that do not fit the
+    budget are SPILLED to the durable archive: the line stays under the session ceiling, and
+    the entries keep a copy on disk. Keeping them on the line instead would oversize it, and
+    rotation can only trim MESSAGE rows, so the queue would evict real transcript rows.
+    """
+    out: list[dict] = []
+    seen: set[object] = set()
+    on_disk = 0
+    for index, group in enumerate((disk, mine)):
+        if not isinstance(group, list):
+            continue
+        for entry in group:
+            if not isinstance(entry, dict):
+                continue
+            ident = entry.get("ctxId")
+            if isinstance(ident, str):
+                key: object = ident
+            else:
+                # HAND-EDITED METADATA IS A DEFENDED SURFACE, as on the restore path: an
+                # unhashable ``content`` raises INSIDE the set, aborting the save.
+                key = _dedupe_key(entry)
+            if key is not None:
+                if key in seen:
+                    continue
+                seen.add(key)
+            out.append(entry)
+            if index == 0:
+                on_disk += 1
+    return _bounded_context_union(
+        out, on_disk, final=final, archive_key=archive_key, archive_base=archive_base
+    )
+
+
+def _ctx_entry_persist_cost(entry: dict) -> int:
+    """Serialized byte cost of one queued entry on the metadata line."""
+    try:
+        return len(json.dumps(entry).encode("utf-8")) + 1
+    except (TypeError, ValueError):
+        # A hand-edited entry that will not serialize is measured approximately rather
+        # than treated as free, which would let it escape the bound entirely.
+        return len(repr(entry).encode("utf-8")) + 1
+
+
+def _bounded_context_union(
+    entries: list[dict],
+    on_disk: int,
+    *,
+    final: bool = False,
+    archive_key: str = "",
+    archive_base: Path | None = None,
+) -> list[dict]:
+    """Admit the writer's additions within the persistable budget, keeping all *on_disk* ones.
+
+    The first *on_disk* entries came from the line being rewritten and are NEVER dropped:
+    they have no other durable home, so shedding one is unrecoverable loss. A line already
+    over budget before this save stays over budget rather than being trimmed, because trimming
+    it would destroy content this save was only ever meant to add to.
+
+    *final* means no later save will retry a deferral, so nothing is held back for a retry --
+    entries past the budget are spilled to the durable archive instead of onto the line.
+    """
+    budget = max(1, int(_SESSION_MAX_BYTES // 2))
+    if final:
+        kept: list[dict] = []
+        excess: list[dict] = []
+        used = 0
+        for entry in entries:
+            cost = _ctx_entry_persist_cost(entry)
+            if kept and used + cost > budget:
+                excess.append(entry)
+                continue
+            used += cost
+            kept.append(entry)
+        if not excess:
+            return kept
+        try:
+            path = write_ctx_overflow(archive_key or "pending-context", excess, archive_base)
+        except Exception:
+            # KEEPING THEM IS THE LESSER LOSS when the sidecar is unwritable: an oversized
+            # line costs MESSAGE rows, which rotation archives, while a shed entry is gone.
+            logger.warning(
+                "final save: could not spill %d over-budget pending-context entries, so "
+                "they stay on the metadata line; the transcript may rotate to fit it",
+                len(excess),
+                exc_info=True,
+            )
+            return list(entries)
+        logger.warning(
+            "final save: %d of %d pending-context entries exceeded the %d-byte budget and were "
+            "SPILLED to %s, not dropped; the metadata line stays under the session ceiling: %s",
+            len(excess),
+            len(entries),
+            budget,
+            path,
+            ", ".join(
+                e["ctxId"] if isinstance(e.get("ctxId"), str) else repr(_dedupe_key(e))[:64]
+                for e in excess[:20]
+            ),
+        )
+        return kept
+    kept = list(entries[:on_disk])
+    used = sum(_ctx_entry_persist_cost(e) for e in kept)
+    deferred: list[str] = []
+    for entry in entries[on_disk:]:
+        cost = _ctx_entry_persist_cost(entry)
+        if kept and used + cost > budget:
+            ident = entry.get("ctxId")
+            label = ident if isinstance(ident, str) else repr(_dedupe_key(entry))[:64]
+            deferred.append(label)
+            continue
+        used += cost
+        kept.append(entry)
+    if deferred:
+        logger.warning(
+            "pending-context union is at the %d-byte persistable budget; DEFERRED %d of %d "
+            "entries to a later save (they remain queued in memory, nothing is dropped): %s",
+            budget,
+            len(deferred),
+            len(entries),
+            ", ".join(deferred[:20]),
+        )
+    return kept
 
 
 def carry_unowned_metadata(
@@ -843,8 +1028,86 @@ def _sessions_dir() -> Path:
     return config_dir() / SESSIONS_DIR_NAME
 
 
+def _fold_ctx_overflow(meta: dict, key: str, base: Path | None = None) -> dict:
+    """Re-attach *key*'s spilled entries to ``pending_context`` on the way out of a read.
+
+    Folded HERE so the spill is symmetric with the save and invisible to callers: every
+    hydration site and the save's own accounting read this accessor, so none of them can
+    forget the sidecar and leave its entries out of the delivery queue.
+    """
+    if not isinstance(meta, dict):
+        return meta
+    spilled = read_ctx_overflow(key, base)
+    if not spilled:
+        return meta
+    on_line = meta.get("pending_context")
+    on_line = on_line if isinstance(on_line, list) else []
+    seen = {e["ctxId"] for e in on_line if isinstance(e, dict) and isinstance(e.get("ctxId"), str)}
+    folded = [*on_line]
+    folded.extend(
+        e for e in spilled if not (isinstance(e.get("ctxId"), str) and e["ctxId"] in seen)
+    )
+    out = dict(meta)
+    out["pending_context"] = folded
+    return out
+
+
+def _fold_ctx_overflow_status(pair: tuple[dict, bool], key: str, base: Path | None = None):
+    meta, ok = pair
+    return _fold_ctx_overflow(meta, key, base), ok
+
+
 def _archive_dir(base: Path | None = None) -> Path:
     return (base or _sessions_dir()) / ARCHIVE_DIR_NAME
+
+
+CTX_OVERFLOW_DIR_NAME = "context-overflow"
+
+
+def _ctx_overflow_path(key: str, base: Path | None = None) -> Path:
+    return (base or _sessions_dir()) / CTX_OVERFLOW_DIR_NAME / f"{_safe_key(key)}.jsonl"
+
+
+def write_ctx_overflow(key: str, entries: list[dict], base: Path | None = None) -> Path:
+    """Persist *entries* that did not fit *key*'s metadata line, replacing any prior spill.
+
+    A SIDECAR rather than the archive, because the archive is a graveyard nothing reads: an
+    entry only reaches the agent through ``drain_pending_context``, which delivers the slot's
+    QUEUE, so a spill that cannot be read back is acknowledged content that is never injected.
+    This file is outside the transcript, so it does not count toward the rotation ceiling, and
+    :meth:`ConversationLog.get_metadata` folds it back for every reader.
+    """
+    path = _ctx_overflow_path(key, base)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = "".join(json.dumps(e, default=repr) + "\n" for e in entries)
+    tmp = path.with_suffix(f".jsonl.tmp-{uuid.uuid4().hex}")
+    tmp.write_text(payload, encoding="utf-8")
+    os.replace(tmp, path)
+    return path
+
+
+def read_ctx_overflow(key: str, base: Path | None = None) -> list[dict]:
+    """Entries spilled off *key*'s metadata line, or ``[]``.
+
+    Tolerant by design: this sits on the hydration path, so a truncated or hand-edited line
+    must cost that one entry rather than the whole queue.
+    """
+    path = _ctx_overflow_path(key, base)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return []
+    out: list[dict] = []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict):
+            out.append(entry)
+    return out
 
 
 def _archive_lines(
@@ -1160,6 +1423,16 @@ def transcript_stems(key: str) -> tuple[str, ...]:
         if legacy not in stems:
             stems.append(legacy)
     return tuple(stems)
+
+
+def same_transcript(a: str, b: str) -> bool:
+    """True when two session keys resolve to the SAME transcript file.
+
+    Compared as stem SETS, never by string equality: ``_safe_key`` is many-to-one, so
+    ``slack:C1:1.2`` and ``slack:C1_1.2`` both land in ``slack_C1_1.2.jsonl`` and an
+    equality test reports "different transcript" when nothing moved.
+    """
+    return bool(set(transcript_stems(a)) & set(transcript_stems(b)))
 
 
 def _redact_at_write_boundary(role: str, content: str) -> str:
@@ -2852,10 +3125,13 @@ class ConversationLog:
         return TranscriptReadProjection._content_text(content)
 
     def get_metadata(self, key: str) -> dict:
-        return self._read_projection.get_metadata(key)
+        meta = self._read_projection.get_metadata(key)
+        return _fold_ctx_overflow(meta, key, self._dir)
 
     def get_metadata_status(self, key: str) -> tuple[dict, bool]:
-        return self._read_projection.get_metadata_status(key)
+        return _fold_ctx_overflow_status(
+            self._read_projection.get_metadata_status(key), key, self._dir
+        )
 
     def _pause_for_transient_retry(self) -> None:
         self._read_projection._pause_for_transient_retry()

@@ -32,6 +32,7 @@ import { useAppDispatch, useAppSelector } from '../../store'
 import { addSlotOptimistic, fetchSlots } from '../../store/dashboardSlice'
 import { selectComposerBusy } from '../../store/chatSlice'
 import { api } from '../../api/client'
+import { ApiError } from '../../api/apiError'
 import type { ChatSlot } from '../../types'
 import { papyrusApi, pdfUrl, type Diagnostic } from './api'
 import { companionContextLines, DEFAULT_MAIN_FILE } from './companionPrompt'
@@ -85,6 +86,13 @@ const FLUSH_FAILED = 'papyrus: buffer flush failed'
 
 /** True for the flush-abort sentinel above, so a mutation that bailed on an
  *  unsaveable buffer does not overwrite the real write error with it. */
+/** Residency bound for the co-author nudge, matching the artifact companion's hour.
+ *
+ *  Every in-repo `/context` caller bounds how long its entry may sit queued; `ephemeral`
+ *  is an orthogonal choice about DURABILITY, and on its own leaves residency to the
+ *  queue-level backstop rather than to this caller's intent. */
+const PAPYRUS_CONTEXT_MAX_AGE_S = 3600
+
 const isFlushAbort = (err: Error): boolean => err.message === FLUSH_FAILED
 
 /**
@@ -127,6 +135,9 @@ export default function PapyrusPage() {
   const [slotKey, setSlotKey] = useState<string | null>(null)
   const [slotCreating, setSlotCreating] = useState(false)
   const [error, setError] = useState('')
+  // Separate from `error` because the two differ in SEVERITY, not just wording: `error`
+  // reports a failed user action, this reports a declined convenience the user can redo.
+  const [contextError, setContextError] = useState<string | null>(null)
   // The file whose on-disk copy diverged from an unsaved buffer (a co-author edit
   // arriving while the user was typing). Blocks saves until reconciled — see
   // `reloadOpenFile`'s no-flush branch and `resolveConflict`.
@@ -576,6 +587,27 @@ export default function PapyrusPage() {
     onError: (err: Error) => setError(err.message),
   })
 
+  // Routed through React Query like every other mutation on this page, so the request is
+  // retried, deduped and observable rather than a bare floating promise.
+  const injectContextMut = useMutation({
+    mutationFn: (vars: { slotKey: string }) =>
+      api.chatSlotContext(vars.slotKey, companionContext(), {
+        source: 'papyrus-co-author', ephemeral: true,
+        maxAge: PAPYRUS_CONTEXT_MAX_AGE_S,
+      }),
+    onSuccess: () => setContextError(null),
+    // EVERY rejection reaches the user: silence left the session open with no document
+    // context and no way to know. Only the MESSAGE specialises, on a capacity refusal.
+    onError: (err: unknown) => {
+      const full = err instanceof ApiError && err.status === 429
+        && err.body.includes('context_not_queued')
+      setContextError(i18nT(full
+        ? 'apps.papyrus.workspace.context_queue_full'
+        : 'apps.papyrus.workspace.context_not_attached'))
+    },
+  })
+  const injectContext = injectContextMut.mutate
+
   // ── Git ───────────────────────────────────────────────────────────────────
 
   const gitQuery = useQuery({
@@ -650,7 +682,6 @@ export default function PapyrusPage() {
   const companionContext = useCallback(() => {
     return companionContextLines(project ?? '', mainFile).join('\n')
   }, [project, mainFile])
-
   const startSession = useCallback(async () => {
     if (!project || slotCreating) return
     setSlotCreating(true)
@@ -668,9 +699,7 @@ export default function PapyrusPage() {
         messages: 0,
         running: false,
       } as ChatSlot))
-      api.chatSlotContext(key, companionContext(), {
-        source: 'papyrus-co-author', ephemeral: true,
-      }).catch(() => undefined)
+      injectContext({ slotKey: key })
       dispatch(fetchSlots())
       saveSlot(project, key)
       setSlotKey(key)
@@ -679,7 +708,7 @@ export default function PapyrusPage() {
     } finally {
       setSlotCreating(false)
     }
-  }, [project, slotCreating, dispatch, companionContext])
+  }, [project, slotCreating, dispatch, injectContext])
 
   const toggleChat = useCallback(() => {
     setChatOpen(open => {
@@ -963,6 +992,14 @@ export default function PapyrusPage() {
       {/* No hand-off: the open editor buffer is unsaved (a save banner is showing
           precisely because it did not persist). */}
       <ErrorNotice className="mx-3 mt-2 animate-rise" message={error} onDismiss={() => setError('')} />
+      {/* No hand-off: this page holds an editable buffer and `askAgent` navigates away,
+          unmounting it, so the offer would risk unsaved edits to save nothing. */}
+      <ErrorNotice
+        className="mx-3 mt-2 animate-rise"
+        message={contextError}
+        title={i18nT('apps.papyrus.workspace.context_notice_title')}
+        onDismiss={() => setContextError(null)}
+      />
 
       {/* Workspace */}
       <div className={`flex flex-1 min-h-0 ${isMobile ? 'flex-col' : ''}`}>

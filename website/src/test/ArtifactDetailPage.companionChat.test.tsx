@@ -136,7 +136,7 @@ describe('ArtifactDetailPage companion chat', () => {
     await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
   })
 
-  it('injects the artifact context ephemerally in the background', async () => {
+  it('injects the artifact context with a bounded TTL in the background', async () => {
     renderPage()
     await waitForLoaded()
     fireEvent.click(screen.getByLabelText('Toggle agent chat'))
@@ -145,9 +145,80 @@ describe('ArtifactDetailPage companion chat', () => {
     expect(slot).toBe('slot-new')
     expect(content).toContain('cr-queue')
     expect(content).toContain('artifact_get_comments')
-    // Ephemeral: consumed on the NEXT user message, never persisted as a turn.
-    expect(opts).toEqual({ source: 'artifact-companion', ephemeral: true })
+    // The key is the artifact VERSION, which is what makes a reload's repost of the same
+    // snapshot a no-op at the boundary rather than a second durable entry.
+    expect(opts).toEqual({
+      source: 'artifact-companion', maxAge: 3600, contextKey: '2',
+    })
   })
+
+  it('leaves no injected-version marker when the context POST is rejected', async () => {
+    // A 429 must NOT record a delivered injection: the marker suppresses the
+    // retry after a reload, so writing it on a rejection loses context for good.
+    localStorage.clear()
+    sessionStorage.clear()
+    vi.mocked(api).chatSlotContext = vi.fn().mockRejectedValue(new Error('429 Too Many Requests'))
+    renderPage()
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
+  })
+
+  it('a queue-full refusal does not persist a claim that suppresses later nudges', async () => {
+    // UX finding: holding the claim on a 429 marked the version injected though it never
+    // was, so that version's freshness nudge was skipped on EVERY later reload.
+    localStorage.clear()
+    sessionStorage.clear()
+    const refusal = Object.assign(new Error('context_not_queued'), {
+      status: 429,
+      body: JSON.stringify({ code: 'context_not_queued' }),
+    })
+    vi.mocked(api).chatSlotContext = vi.fn().mockRejectedValue(refusal)
+    renderPage()
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
+    // Positive control: the refusal really was recognised as one, so the null below is
+    // the released claim rather than a path that never ran.
+    expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1)
+  })
+
+  it('a reload before sending does not queue the artifact context twice', async () => {
+    // GPT BLOCKER: the nudge also fired on `injected === undefined`, which every reload
+    // produces, so a chat reopened before its first turn queued the same artifact twice.
+    localStorage.clear()
+    sessionStorage.clear()
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
+    // Positive control: the bound slot really was resolved, so the zero below is a nudge
+    // that declined to fire rather than a panel that never opened.
+    expect(screen.getByTestId('chat-page')).toBeInTheDocument()
+    expect(vi.mocked(api).chatSlotContext).not.toHaveBeenCalled()
+  })
+
+  it('still nudges on a cold resolve when the artifact is stale', async () => {
+    // The marker is in-memory only, so a reload re-sends rather than trusting an entry a
+    // crash may have lost -- a repeat nudge, not silent loss (GPT F3 chose that direction).
+    localStorage.clear()
+    sessionStorage.clear()
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({
+      key: 'chat-bound', artifact: 'cr-queue', last_activity_ts: '2026-05-01T00:00:00Z',
+    })])
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
+    // The artifact's updated_at is newer than the slot's last activity, so the resumed
+    // agent must be told, rather than silently acting on a stale version.
+    await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
+  })
+
+
 
   it('embeds ChatPage in single-session chrome with URL sync off', async () => {
     // noUrlSync is what stops the embedded page writing ?sid= and navigating the
