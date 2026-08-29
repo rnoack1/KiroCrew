@@ -189,3 +189,20 @@ describe('registry wiring', () => {
     expect(container.textContent).not.toContain('\u2139')
   })
 })
+
+describe('an explicit tone replaces the emoji status icon', () => {
+  it('renders the warn affordance from a tone prop with no glyph in the copy', () => {
+    const { container } = render(<NoticeCard content="Delivery unconfirmed." tone="warn" />)
+    const card = container.querySelector('[data-testid="notice-card"]')
+    expect(card?.getAttribute('data-tone'),
+      'the tone must come from data, not from a glyph baked into the copy').toBe('warn')
+    expect(container.textContent ?? '',
+      'AUTOSDE no-emoji-as-icons: no emoji may stand in for the status icon')
+      .not.toMatch(/[\u2139\u26A0\u26D4]/)
+  })
+
+  it('still sniffs a gateway-authored glyph when no tone is given', () => {
+    const { container } = render(<NoticeCard content={'\u26A0\uFE0F from the gateway'} />)
+    expect(container.querySelector('[data-testid="notice-card"]')?.getAttribute('data-tone')).toBe('warn')
+  })
+})

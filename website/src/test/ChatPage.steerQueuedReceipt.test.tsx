@@ -200,7 +200,11 @@ describe('optimistic steer bubble vs the steer receipt', { timeout: 20_000 }, ()
     const rows = await steerWithReceipt({ reject: new DOMException('aborted', 'AbortError') })
     await waitFor(() => expect(rows.input.value).toBe(STEERED_TEXT))
     const notice = (rows.store.getState().chat.messages as ChatMessage[]).find(m => m.role === 'notice')
-    expect(notice?.content).toMatch(/^\u26A0\uFE0F Delivery not confirmed/)
+    // Converged onto ONE caption for this condition: two near-identical phrasings with
+    // different advice read as two different conditions.
+    expect(notice?.content).toMatch(/^Delivery unconfirmed/)
+    // WARN travels as data, so the row cannot ship an emoji as its status icon.
+    expect(notice?.meta?.tone, 'the notice must still render as a warning').toBe('warn')
     await waitFor(() => expect(
       (rows.store.getState().chat.messages as ChatMessage[]).filter(m => m.role === 'user' && m.content === STEERED_TEXT),
     ).toHaveLength(0))
@@ -210,7 +214,9 @@ describe('optimistic steer bubble vs the steer receipt', { timeout: 20_000 }, ()
     const rows = await steerWithReceipt({ reject: new TypeError('Failed to fetch') })
     await waitFor(() => expect(rows.input.value).toBe(STEERED_TEXT))
     const err = (rows.store.getState().chat.messages as ChatMessage[]).find(m => m.role === 'error')
-    expect(err?.content).toBe(i18nT('pages.chatPage.send_failed_connection'))
+    // Converged with the composer arm: one transport failure must not tell two stories, and
+    // "try again" invited exactly the resend the duplicate caption warns about.
+    expect(err?.content).toBe(i18nT('pages.chatPage.send_no_response'))
     await waitFor(() => expect(
       (rows.store.getState().chat.messages as ChatMessage[]).filter(m => m.role === 'user' && m.content === STEERED_TEXT),
     ).toHaveLength(0))

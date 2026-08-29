@@ -1,35 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { useAppDispatch } from '../store'
-import { cancelQueuedMessage, editQueuedMessage } from '../store/chatSlice'
+import { cancelQueuedMessage, applyQueueEdit } from '../store/chatSlice'
 import { restoreQueuedContent } from '../utils/fileTokens'
 import type { ChatMessage } from '../types'
+import { queuedSendStash } from '../utils/queuedSendStash'
 
-/** Pre-serialization composer state of a send the server QUEUED, written by the
- *  host's send path when the `queued: true` receipt names the entry. */
-export interface QueuedSendRecord {
-  /** The text exactly as the user typed it. */
-  raw: string
-  /** The staged file paths at send time. */
-  files: string[]
-  /** The exact POSTed LLM-facing text — the edit guard: an entry edited after
-   *  send keeps its queue id but fails this equality, so an edited card falls
-   *  to the parser instead of clobbering the edit with pre-edit state. */
-  sent: string
-}
 
-/** Queued-send stash, keyed by the `queue_id` the send receipt returns (the
- *  same id `queue_push` broadcasts and the card's cancel button carries).
- *  Queue identity is the ONLY sound key: the serialization is not injective
- *  (image @-tokens are erased from the LLM-facing text), so content-keyed
- *  records can collide across different captions, duplicate sends, and other
- *  tabs. Module-level so every host's send path (ChatPage, ChatPane) writes
- *  the one store this hook's cancel consumes — the same one-owner reasoning
- *  as the hook itself (#5891). Deliberately unevicted: an entry dies on the
- *  cancel that consumes it, and evicting a live entry would degrade that
- *  card's cancel to the parser fallback; orphans from normal delivery are
- *  three small strings bounded by queued sends per tab session. */
-export const queuedSendStash = new Map<string, QueuedSendRecord>()
+export {
+  queuedSendStash,
+  preSendStash,
+  stashPreSend,
+  retirePreSendStash,
+  adoptPreSendStash,
+  stashQueuedSend,
+  invalidateQueuedSendStash,
+  type QueuedSendRecord,
+} from '../utils/queuedSendStash'
 
 /** The four queue-card callbacks `QueueStack` takes, plus the in-flight set it
  *  disables its controls from. */
@@ -194,9 +181,15 @@ export function useQueuedMessageActions({
       // worse than the verbatim restore this replaced.
       const stashed = queuedSendStash.get(queueId)
       if (stashed) queuedSendStash.delete(queueId)
-      const { text, files } = stashed && stashed.sent === msg.content
+      // Second source for the same fact: when the receipt was unreadable no stash
+      // was written, and the card's own text is the redacted form (#6825).
+      const carried = msg.meta?.rawSend as { text?: string; files?: string[]; sent?: string } | undefined
+      const fromStash = stashed && stashed.sent === msg.content
+      const { text, files } = fromStash
         ? { text: stashed.raw, files: stashed.files }
-        : restoreQueuedContent(msg.content)
+        : carried && typeof carried.text === 'string' && carried.sent === msg.content
+          ? { text: carried.text, files: carried.files || [] }
+          : restoreQueuedContent(msg.content)
       restoreDraftRef.current?.(text, files)
     }
     // Optimistically remove the card; the WS echo is a no-op if already gone.
@@ -221,8 +214,9 @@ export function useQueuedMessageActions({
     if (!slot) return
     const trimmed = content.trim()
     if (!trimmed) return
-    // Optimistically update the card; the WS event reconciles other clients.
-    dispatch(editQueuedMessage({ slot, queue_id: queueId, content: trimmed }))
+    // Optimistically update the card; the WS event reconciles other clients. `applyQueueEdit`
+    // owns retiring the stash, so this path and the remote frame cannot drift apart.
+    dispatch(applyQueueEdit({ slot, queue_id: queueId, content: trimmed }))
     run(queueId, api.editQueuedMessage(slot, queueId, trimmed))
   }, [slot, dispatch, run])
 

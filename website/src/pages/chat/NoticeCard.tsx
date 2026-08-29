@@ -27,6 +27,13 @@ export function parseNotice(content: string): { tone: NoticeTone; text: string }
   return { tone, text: raw.slice(m[0].length) }
 }
 
+/** The tone a row carried as data, or undefined so the glyph sniff still decides. `meta` is an
+ *  untyped bag, so an unrecognised value must fall through rather than render as a tone. */
+export function noticeTone(meta?: Record<string, unknown>): NoticeTone | undefined {
+  const t = meta?.tone
+  return t === 'info' || t === 'warn' || t === 'blocked' ? t : undefined
+}
+
 /** Severity announced to assistive tech; the stripped emoji was previously the
  * only accessible signal, so a visually-hidden label replaces it. Info stays
  * silent — a routine notice needs no severity call-out. */
@@ -56,11 +63,15 @@ function srSeverity(tone: NoticeTone): string {
  * while the glyph is 1em of the fixed 13px type, so a px constant would drift
  * under a non-16px root font-size.
  */
-export default memo(function NoticeCard({ content }: { content: string }) {
+export default memo(function NoticeCard({ content, tone: toneProp }: { content: string; tone?: NoticeTone }) {
   // Language-generation subscription: this memo() boundary renders i18nT()
   // strings, so a language switch must invalidate it.
   useLanguageGeneration()
-  const { tone, text } = parseNotice(content)
+  const parsed = parseNotice(content)
+  // An explicit tone is for rows THIS app builds: only a gateway-authored string needs the glyph
+  // sniff, and baking one into our own copy would ship an emoji as a status icon.
+  const tone = toneProp ?? parsed.tone
+  const text = parsed.text
   const Icon = tone === 'blocked' ? Ban : tone === 'warn' ? TriangleAlert : Info
   const severity = srSeverity(tone)
   return (

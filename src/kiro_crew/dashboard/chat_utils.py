@@ -1501,6 +1501,29 @@ def _redact_for_display(text: str) -> str:
     return text
 
 
+def queue_entry_for_detail(q: dict) -> dict:
+    """One slot-detail queue entry.
+
+    Carries ``meta.sendId`` when the entry has one. The id is already stored on
+    the entry by the enqueue path, but slot detail used to drop it, so a client
+    that MISSED the ``queue_push`` broadcast hydrated an id-less card and could
+    not adopt its pre-send stash -- cancelling then fell back to the parser and
+    restored the redacted text WITHOUT the attachments, which is exactly the
+    loss that stash exists to prevent. Additive: omitted entirely when the entry
+    carries no id, so an entry from a send that minted none keeps its prior shape.
+
+    Also carries ``edited`` once the entry has been edited, so that same client
+    does not adopt a pre-send record whose text and files predate the edit.
+    """
+    entry = {"id": q["id"], "content": _redact_for_display(q["content"])}
+    send_id = (q.get("meta") or {}).get("sendId")
+    if isinstance(send_id, str) and send_id:
+        entry["sendId"] = send_id
+    if q.get("edited"):
+        entry["edited"] = True
+    return entry
+
+
 def _remove_queued_by_id(messages: list[dict], queue_id: str) -> bool:
     """Remove a 'queued' placeholder by queue_id stored in cls JSON."""
     for i, m in enumerate(messages):

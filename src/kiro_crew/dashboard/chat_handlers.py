@@ -92,6 +92,7 @@ from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
     effective_session_key,
     history_corpus_unreadable,
+    queue_entry_for_detail,
     slot_history_key,
     subagents_attached,
 )
@@ -701,15 +702,15 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         _c, _ = redact_exfiltration_urls(message)
         _c, _ = redact_credentials(_c)
         _redacted = _redact_for_display(_c)
-        state.broadcast_ws(
-            "queue_push",
-            {
-                "slot": slot.key,
-                "content": _redacted,
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "queue_id": qid,
-            },
-        )
+        _hold_payload: dict[str, object] = {
+            "slot": slot.key,
+            "content": _redacted,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "queue_id": qid,
+        }
+        if _hold_sid:
+            _hold_payload["sendId"] = _hold_sid
+        state.broadcast_ws("queue_push", _hold_payload)
         # Same receipt contract as the busy-slot queue branch: `queue_id`
         # binds the sender's pre-send composer state to this exact entry.
         return web.json_response({"ok": True, "queued": True, "queue_id": qid})
@@ -2209,7 +2210,17 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     running = slot.running
     stopping = slot._stopping
     display_title = slot.display_title
-    queue_snapshot = [{"id": q["id"], "content": q["content"]} for q in slot._queue]
+    # Stripping `meta.sendId`/`edited` left slot-detail hydration unable to adopt after a missed
+    # queue_push. Copied, not aliased, to keep the render thread's snapshot discipline.
+    queue_snapshot = [
+        {
+            "id": q["id"],
+            "content": q["content"],
+            **({"meta": dict(q["meta"])} if isinstance(q.get("meta"), dict) else {}),
+            **({"edited": True} if q.get("edited") else {}),
+        }
+        for q in slot._queue
+    ]
     context_fields = await _context_snapshot_fields(state, slot)
 
     def _render(live_child: str) -> str:
@@ -2230,10 +2241,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                 "running": running,
                 "stopping": stopping,
                 "messages": prepared,
-                "queue": [
-                    {"id": q["id"], "content": _redact_for_display(q["content"])}
-                    for q in queue_snapshot
-                ],
+                "queue": [queue_entry_for_detail(q) for q in queue_snapshot],
                 "total": total,
                 "has_more": has_more,
                 "next_before": next_before,
@@ -8190,10 +8198,7 @@ async def _live_slot_resume_response(
                 "ok": True,
                 "key": existing.key,
                 "messages": prepared,
-                "queue": [
-                    {"id": q["id"], "content": _redact_for_display(q["content"])}
-                    for q in existing._queue
-                ],
+                "queue": [queue_entry_for_detail(q) for q in existing._queue],
                 "total": total,
                 "has_more": next_before > 0,
                 "next_before": next_before,
@@ -8783,9 +8788,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             "messages": _prepare_messages(
                 recent, slot.running, live_child=_live_child_instance(state, slot)
             ),
-            "queue": [
-                {"id": q["id"], "content": _redact_for_display(q["content"])} for q in slot._queue
-            ],
+            "queue": [queue_entry_for_detail(q) for q in slot._queue],
             "total": total,
             "has_more": total > len(recent),
             "memory_mode": slot.memory_mode,

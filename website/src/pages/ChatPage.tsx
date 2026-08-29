@@ -25,12 +25,13 @@ import type { ResizeInfo } from '../utils/resizeImage'
 import { useAppSelector, useAppDispatch, store } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
-import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
+import { useQueuedMessageActions, stashQueuedSend, stashPreSend, retirePreSendStash } from '../hooks/useQueuedMessageActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, fetchHistory, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection,
   appendMessage, appendSlotMessage, endLocalTurn, resumeFromHistory, clearUnresumableResume, forkSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions,
+  selectSlotMessages,
   selectComposerBusy,
   selectContinuable,
   selectTurnInterrupted,
@@ -39,11 +40,11 @@ import {
   selectSubagent,
   setActiveSlot, truncateAfterIndex, replaceMessages,
   requestStop, pendingQuestionFor, captureStatelessCard, clearFollowupCard, dismissFollowupItem, clearFolderSuggestion, ageFolderSuggestion,
-  retireStatelessQuestion, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer,
+  retireStatelessQuestion, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, clearPendingServerRow, markDeliveryUnknown, retainedSend,
   requestSlotReveal,
   mcpAppKey,
 } from '../store/chatSlice'
-import { confirmedDelivered } from '../utils/sendDelivery'
+import { confirmedDelivered, confirmsSend } from '../utils/sendDelivery'
 import { sendTurn } from '../chat-core/transport/sendTurn'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import { onTerminalReady, sendToTerminalSession, getTerminalShell, getTerminalFenceShells } from '../utils/terminalRegistry'
@@ -301,6 +302,7 @@ import ChatSidebar from './ChatSidebar'
 import { SIDEBAR_MIN, SIDEBAR_MAX, clampSidebarWidth } from './chat/sidebarWidth'
 import { toSlug, resolveMsgIndex } from '../utils/shareUrl'
 import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, mergeIntoDraft, mergeRecoveredDraft, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
+import { loadStagedSend, setStagedSend, clearStagedSend } from '../utils/chatPaneRecovery'
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../utils/chatFileDrafts'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
 import { loadSessionRefDrafts, saveSessionRefDrafts as persistSessionRefDrafts, setSessionRefDraft } from '../utils/chatSessionRefDrafts'
@@ -353,7 +355,7 @@ import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import TurnBlock from './chat/TurnBlock'
 import Clickable from '../components/Clickable'
 import StopEventCard from './chat/StopEventCard'
-import NoticeCard from './chat/NoticeCard'
+import NoticeCard, { noticeTone } from './chat/NoticeCard'
 import WorkflowProgressBar from './chat/WorkflowProgressBar'
 import { tryQuickSend } from '../lib/quickSend'
 import { rewindWithRollback } from '../lib/rewindCall'
@@ -1011,7 +1013,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           role: 'error',
           content: receipt.reason
             ? i18nT('pages.chatPage.send_failed_with_error', { error: receipt.reason })
-            : i18nT(receipt.status === 'transport-error' ? 'pages.chatPage.send_failed_connection' : 'pages.chatPage.send_failed'),
+            : i18nT(receipt.status === 'transport-error' ? 'pages.chatPage.send_no_response' : 'pages.chatPage.send_failed'),
           cls: '',
         })
         handBack()
@@ -1038,11 +1040,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           dispatch(resolveOptimisticSteer({ slot, sendId, outcome: 'queued' }))
         }
         handBack()
-        // The lead glyph is NoticeCard's tone selector (parseNotice): \u26A0 =
-        // warn, which also gives the row its "Warning" screen-reader label.
-        // Kept out of the catalog string so the copy stays shared with the
-        // surfaces that render it in their own strip.
-        row({ role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed'), cls: '' })
+        // The tone travels as data, not as a glyph baked into the copy: the emoji sniff in
+        // parseNotice exists for gateway-authored strings, and this row is ours.
+        row({ role: 'notice', content: i18nT('pages.chatPage.delivery_unconfirmed_resend'), cls: '', meta: { tone: 'warn' } })
         return
       }
       if (!sendId || !slot) return
@@ -1613,6 +1613,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (prevSlot.current) setFileDraft(fileDrafts.current, prevSlot.current, pendingFilesRef.current)
     if (prevSlot.current) setPasteDraft(pasteDrafts.current, prevSlot.current, pasteBlocksRef.current)
     if (prevSlot.current) setSessionRefDraft(sessionRefDrafts.current, prevSlot.current, pendingSessionsRef.current)
+    // Re-arm the duplicate-resend caption: the draft it warns about persisted, so the
+    // marker has to come back with it rather than dying with the previous tab.
+    if (activeSlot) {
+      // The ACTIVE slot's stored marker is authoritative, so a marker left by a failed
+      // send in ANOTHER slot is cleared rather than retained and shown against this one.
+      const mark = loadStagedSend(activeSlot)
+      // RE-STAMP it, as the four drafts above are re-stamped: the store prunes on its own
+      // TTL, so a read-only marker expires under a draft this revisit just kept alive.
+      if (mark) setStagedSend(activeSlot, mark)
+      setStagedWarnSlot(prev => {
+        if (mark) return prev && prev.slot === activeSlot ? prev : { slot: activeSlot, sendId: mark }
+        return prev && prev.slot !== activeSlot ? null : prev
+      })
+      // NO Discard seed on revisit: the persisted draft is the whole composer, and this path
+      // cannot tell how much of it the send carried, so offering the exit could delete more.
+    }
     const prevSlotVal = prevSlot.current
     prevSlot.current = activeSlot
     const raw = sessionStorage.getItem(PREFILL_STORAGE_KEY)
@@ -1739,6 +1755,71 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // so they survive slot switches / refresh; cleared on send and slot delete.
   const [pasteBlocks, setPasteBlocks] = useState<PasteBlock[]>([])
   const pasteBlocksRef = useRef(pasteBlocks)
+  // The slot whose composer holds a restored payload, and the send it came from. Released
+  // ONLY on an edit -- NOT on confirmation, which would hide a still-resendable payload.
+  const [stagedWarnSlot, setStagedWarnSlot] = useState<{ slot: string; sendId: string } | null>(null)
+  // The recovered payload itself, so a Discard can be offered ONLY while the composer holds
+  // nothing else: a merge puts the user's own mid-flight text here too, which must not be erased.
+  const [recoveredPayload, setRecoveredPayload] = useState<{ slot: string; text: string; files: string[]; pastes: number[]; sessions: string[] } | null>(null)
+  // THE read of the delivery markers: once the store proves this send landed, the caption
+  // must stop hedging ("may send it twice") and state the fact.
+  const stagedSendDelivered = useAppSelector(s => {
+    const st = stagedWarnSlot
+    if (!st) return false
+    return selectSlotMessages(s, st.slot).some(m => m.role === 'user'
+      && confirmsSend(m.meta as Record<string, unknown> | undefined, st.sendId))
+  })
+  // Neither confirmation NOR an edit releases it: both leave the payload one Enter from a
+  // duplicate, and an edit is the natural move before resending.
+  const recoveredTextRef = useRef<string>('')
+  useEffect(() => {
+    // The containment basis, one writer. A reload re-arms the caption with NO payload seeded, so
+    // the restored draft stands in; without it the first keystroke also retired the bubble.
+    if (recoveredPayload?.text) { recoveredTextRef.current = recoveredPayload.text; return }
+    const armed = stagedWarnSlot
+    recoveredTextRef.current = armed ? (drafts.current[armed.slot] ?? inputRef.current ?? '') : ''
+  }, [recoveredPayload, stagedWarnSlot])
+  // The armed send, readable from the stable callback below so releasing can retire its bubble.
+  const armedSendRef = useRef<{ slot: string; sendId: string } | null>(null)
+  useEffect(() => { armedSendRef.current = stagedWarnSlot }, [stagedWarnSlot])
+  const onComposerInput = useCallback((v: string) => {
+    const own = composerSlotRef.current
+    const sent = recoveredTextRef.current.trim()
+    // Containment, not equality: appending a clarification leaves the resendable text intact.
+    // The send path clears this separately, and Discard arrives here with an empty composer.
+    if (!sent || !v.includes(sent)) {
+      const armed = armedSendRef.current
+      setStagedWarnSlot(prev => (prev && prev.slot === own ? null : prev))
+      setRecoveredPayload(prev => (prev && prev.slot === own ? null : prev))
+      if (own) clearStagedSend(own)
+      // The caption and Discard were the bubble's ONLY removal affordance; a send that DID
+      // land comes back with the next fetched page, which carries the server row.
+      if (armed && armed.slot === own) dispatch(clearPendingServerRow({ slot: own, sendId: armed.sendId }))
+    }
+    setInput(v)
+  }, [dispatch])
+  const discardRecoveredSend = useCallback(() => {
+    // Discard means the user does not want this send, so the retained bubble goes too — a send
+    // that DID land comes back with the next fetched page, which carries the server row.
+    const own = composerSlotRef.current
+    const discarded = stagedWarnSlot && stagedWarnSlot.slot === own ? stagedWarnSlot.sendId : undefined
+    if (own && discarded) dispatch(clearPendingServerRow({ slot: own, sendId: discarded }))
+    onComposerInput('')
+    setPendingFiles([])
+    setPasteBlocks([])
+    // The refs were restored WITH this payload, so they leave with it. Omitting them left a
+    // discarded send's references staged, and the next send would carry context nobody chose.
+    setPendingSessions([])
+  }, [onComposerInput, dispatch, stagedWarnSlot])
+  // Acknowledgement, NOT a discard: on a revisit the persisted draft is the whole composer and
+  // this path cannot tell how much of it the send carried, so nothing typed is touched.
+  const dismissDeliveryWarning = useCallback(() => {
+    const own = composerSlotRef.current
+    const acked = stagedWarnSlot && stagedWarnSlot.slot === own ? stagedWarnSlot.sendId : undefined
+    if (own && acked) dispatch(clearPendingServerRow({ slot: own, sendId: acked }))
+    if (own) clearStagedSend(own)
+    setStagedWarnSlot(prev => (prev && prev.slot === own ? null : prev))
+  }, [dispatch, stagedWarnSlot])
   useEffect(() => {
     pasteBlocksRef.current = pasteBlocks
     // Live-persist the composer's blocks so a slot switch / refresh restores
@@ -1755,6 +1836,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // pane. Serialized as LINKS on send — never the referenced transcript.
   const [pendingSessions, setPendingSessions] = useState<SessionRef[]>([])
   const pendingSessionsRef = useRef(pendingSessions)
+  // Discard retires only what the restore staged, so anything added since withholds it. Gating on
+  // COUNT would instead hide it whenever the send carried context, which is the common case.
+  const discardableRecovery = recoveredPayload !== null
+    && recoveredPayload.slot === activeSlot
+    && input.trim() === recoveredPayload.text.trim()
+    && pendingFiles.every(f => recoveredPayload.files.includes(f))
+    && pasteBlocks.every(b => recoveredPayload.pastes.includes(b.seq))
+    && pendingSessions.every(s => recoveredPayload.sessions.includes(s.key))
   useEffect(() => {
     pendingSessionsRef.current = pendingSessions
     // Key off composerSlotRef, not activeSlot (see the composerSlotRef note).
@@ -3968,12 +4057,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       llmTxt = expandKnowledgeBlock(knowledgeBlock) + '\n' + llmTxt
     }
     knowledgeFetchRef.current.clearPending()
+    // ONE owner for stash eligibility, read by BOTH stash sites. An option send is excluded: it
+    // never cleared the composer, so restoring it would merge the option into an intact draft.
+    const stashIsLossless = !optionText && llmTxt === typedTxtDirs
     const bubblePastes = pruneBlocksUtil(displayTxt, activePastes)
     if (bubblePastes.length) saveStoredPaste(llmTxt, displayTxt, bubblePastes, filePaths)
 
     setPrefillHint(false)
     if (!optionText) {
-      setInput(''); setPendingFiles([]); pickedFileTokens.current = {}; setPasteBlocks([]); setPendingSessions([]); if (uiSlot) { delete drafts.current[uiSlot]; delete fileDrafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]; delete sessionRefDrafts.current[uiSlot]; saveDrafts() }
+      // Advance the mirroring refs with the state, not an effect later: the POST can
+      // reject in this same tick, and a failure arm reading a stale ref sees the payload.
+      setInput(''); inputRef.current = ''; setPendingFiles([]); pickedFileTokens.current = {}; setPasteBlocks([]); pasteBlocksRef.current = []; setPendingSessions([]); if (uiSlot) { delete drafts.current[uiSlot]; delete fileDrafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]; delete sessionRefDrafts.current[uiSlot]; saveDrafts() }
+      // The composer this warned about is now EMPTY, so retire the caption and its
+      // persisted marker too, or a reload re-arms a warning over nothing.
+      setStagedWarnSlot(prev => (prev && prev.slot === uiSlot ? null : prev))
+      if (uiSlot) clearStagedSend(uiSlot)
       // The challenge-handoff prompt is seeded into PREFILL_STORAGE_KEY and the
       // slot-restore effect re-applies it on slot changes. Once that prompt is
       // sent, clear the seed so a later slot-restore can't re-fill the (now
@@ -4075,7 +4173,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             const newerIds = new Set(newer.map(i => i.id))
             knowledgeFetchRef.current.inject([...knowledgeBlock.items.filter(i => !newerIds.has(i.id)), ...newer])
           }
-          dispatch(appendMessage({ role: 'error', content: i18nT('pages.chatPage.could_not_start_session_message_restored', { error: createFailReason(e) }), cls: '' }))
+          // Addressed to the ORIGIN slot like the two send-failure arms, so the row
+          // cannot land elsewhere if the guard above ever stops pinning the target.
+          dispatch(appendSlotMessage({ slot: uiSlot, message: { role: 'error', content: i18nT('pages.chatPage.could_not_start_session_message_restored', { error: createFailReason(e) }), cls: '' } }))
         }
         // Announce the failure wherever the in-chat bubble could not. Two shapes:
         //  - No origin slot at all: nothing durable can hold the text (a draft under
@@ -4183,8 +4283,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // bubble is appended from the response instead (see below), because only
     // the server knows whether this particular send got queued after all.
     const _busy = selectComposerBusy(store.getState(), slot ?? null)
-    if (!_busy || forceNew) {
-      dispatch(appendMessage({ role: 'user', content: displayTxt, cls: '', ts: new Date().toISOString(), meta: metaPayload }))
+    // Captured from the gate itself, not re-derived: a failure arm that recomputed
+    // this could drift from the condition and lose text no bubble ever held.
+    const appendedBubble = !_busy || forceNew
+    if (appendedBubble) {
+      // `optionSend` is client-only and stays OUT of `metaPayload`, which goes over the wire:
+      // it tells the queue-push reducer this text is an option, not the user's own draft.
+      dispatch(appendMessage({ role: 'user', content: displayTxt, cls: '', ts: new Date().toISOString(), meta: { ...retainedSend(metaPayload), ...(optionText ? { optionSend: true } : {}) } }))
     }
     window.dispatchEvent(new Event('voice-stop'))
     sendingRef.current = false
@@ -4218,8 +4323,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
      * `[ Paste #N · M lines ]` literal. Shares the create-failure path's merge
      * rule so a reference staged while the send was in flight is not clobbered.
      */
-    const restoreComposerAfterFailedSend = () => {
+    /** Hand the payload back. `deliveryUnknown` arms the duplicate-resend caption; an
+     *  explicit refusal must NOT, since nothing was sent and a retry is safe. */
+    const restoreComposerAfterFailedSend = (deliveryUnknown: boolean) => {
       if (!slot) return
+      // An option send took its text from the CLICK, not the composer, so the block at
+      // `!optionText` cleared nothing -- restoring would merge it into an intact draft.
+      if (optionText) return
       // Ownership of the live composer state, not the active tab: see the
       // steer receipt's `onScreenNow` for the mid-switch window this closes.
       const onScreenNow = composerSlotRef.current === slot
@@ -4246,17 +4356,47 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // structure, not copy, so it stays off the i18n gate honestly rather than by
       // exemption (same treatment as appendSessionRefLinks).
       const textBack = mergeRecoveredDraft(keepText, carriedText)
+      // Attachments went out with the payload too, so a timeout that restores the text
+      // must restore them: they are not re-derivable, and the draft was cleared pre-POST.
+      const keepFiles = onScreenNow ? pendingFilesRef.current : (fileDrafts.current[slot] ?? [])
+      const filesBack = [...new Set([...keepFiles, ...sentFiles])]
       setDraft(drafts.current, slot, textBack)
       setPasteDraft(pasteDrafts.current, slot, pastesBack)
       setSessionRefDraft(sessionRefDrafts.current, slot, refsBack)
+      setFileDraft(fileDrafts.current, slot, filesBack)
       saveDrafts()
       if (onScreenNow) {
-        setInput(textBack); setPasteBlocks(pastesBack); setPendingSessions(refsBack)
+        inputRef.current = textBack; pasteBlocksRef.current = pastesBack
+        setInput(textBack); setPasteBlocks(pastesBack); setPendingSessions(refsBack); setPendingFiles(filesBack)
+      }
+      // Only an UNKNOWN delivery can duplicate a turn, so only it arms the caption. The
+      // marker is persisted with the draft it warns about, or a reload loses the warning.
+      if (deliveryUnknown) {
+        if (onScreenNow) {
+          setStagedWarnSlot({ slot, sendId })
+          // Snapshot the SEND's own context, never the merged arrays: those fold in what the user
+          // staged while the request was in flight, and Discard must not reach their unsent work.
+          setRecoveredPayload({
+            slot,
+            text: carriedText,
+            files: sentFiles,
+            pastes: carriedPastes.map(b => b.seq),
+            sessions: sentSessionRefs.map(r => r.key),
+          })
+        }
+        // Persist unconditionally though: it is keyed per slot, so an off-screen failure is
+        // recovered when that slot is opened rather than shown over someone else's draft.
+        setStagedSend(slot, sendId)
       }
     }
     // The POST, its 10 s deadline, the resolves-not-rejects trap and the body
     // classification all live in the chat-core transport now; this surface
     // only decides how to REACT to the receipt. `sendTurn` never rejects.
+    // Keyed on `sendId` BEFORE the POST: the queue id only arrives with the receipt, so a 2xx
+    // whose body cannot be read leaves the receipt-path stash below unwritten.
+    if (stashIsLossless) {
+      stashPreSend(sendId, { raw, files: stagedFilesAtSend, sent: llmTxt })
+    }
     const receipt = await sendTurn({
       message: llmTxt,
       slot: slot ?? undefined,
@@ -4265,6 +4405,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       colorTheme: colorThemeRef.current,
     })
     const { body } = receipt
+    // Retire only on an outcome that SETTLED the send, as ChatPane's arms do. Both no-receipt
+    // arms leave the server free to have queued it, and a queued acceptance still awaits its
+    // `queue_push`: retiring there left nothing to adopt, so cancel lost the attachments.
+    const mayStillQueue = receipt.status === 'unknown'
+      || receipt.status === 'response-late'
+      || receipt.status === 'transport-error'
+      || body.queued === true
+    if (!mayStillQueue) {
+      retirePreSendStash(sendId)
+    }
     // - `transport-error`: the fetch itself rejected -- the send never left, so
     //   restore-and-report is safe (the old catch branch).
     // - `response-late`: the deadline fired -- the message was received and the
@@ -4295,13 +4445,26 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (receipt.status === 'transport-error') {
       // Cause-stating and naming the restore ("...and try again"), the shared
       // core copy the other surfaces use, instead of a bare "Connection error".
-      failLocalTurn({ role: 'error', content: i18nT('pages.chatPage.send_failed_connection'), cls: '' })
-      restoreComposerAfterFailedSend()
+      // States the RECEIPT fact, not a non-delivery: a fetch rejection does not prove the bytes
+      // never left, and "try again" contradicts the caption warning a resend may duplicate.
+      failLocalTurn({ role: 'error', content: i18nT('pages.chatPage.send_no_response'), cls: '' })
+      restoreComposerAfterFailedSend(true)
+      // Retention STAYS: no transport signal proves non-delivery, and clearing it
+      // lets a later refetch delete a prompt the server did accept.
+      if (slot) dispatch(markDeliveryUnknown({ slot, sendId }))
       return
     }
-    if (receipt.status === 'response-late') return
+    if (receipt.status === 'response-late') {
+      // The deadline fires BEFORE any receipt, so delivery is unknown, not confirmed.
+      // Leaving the row unmarked let a refetch preserve a normal-looking phantom.
+      if (slot) dispatch(markDeliveryUnknown({ slot, sendId }))
+      // Restore ALWAYS, as the transport arm does: the bubble is store-only, so a
+      // reload discards it and this is the only surviving copy of the words.
+      restoreComposerAfterFailedSend(true)
+      return
+    }
     const accepted = receipt.status === 'dispatched' || receipt.status === 'queued'
-    if (body.queued && llmTxt === typedTxtDirs) {
+    if (body.queued && stashIsLossless) {
       // The server queued this send and its receipt names the entry:
       // `queue_id` is the same id `queue_push` broadcasts and the card's
       // cancel button carries, so the pre-send composer state binds to
@@ -4329,8 +4492,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // and are bounded by how many sends a single tab queues in one
       // session.
       if (typeof body.queue_id === 'string' && body.queue_id) {
-        queuedSendStash.set(body.queue_id, { raw, files: stagedFilesAtSend, sent: llmTxt })
+        stashQueuedSend(body.queue_id, { raw, files: stagedFilesAtSend, sent: llmTxt })
       }
+    }
+    if (body.queued && slot) {
+      // Owed on EVERY queued send per `retainedSend`, not just a stashed one: the queued
+      // row owns the message, and a cancelled entry never drains into a page to correlate.
+      dispatch(clearPendingServerRow({ slot, sendId }))
     }
     if (receipt.status === 'refused') {
       // FRAMED like the steer's refusal (and ChatEmbed's): a raw backend reason
@@ -4345,7 +4513,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       })
       // The server explicitly accepted neither (`ok` nor `queued`), so nothing
       // was sent — recovering the composer cannot duplicate a delivered turn.
-      restoreComposerAfterFailedSend()
+      restoreComposerAfterFailedSend(false)
+      // Nothing was sent, so no refetch should re-attach this row. The pending
+      // flag deliberately stays — a refusal is not a receipt.
+      if (slot) dispatch(clearPendingServerRow({ slot, sendId }))
     } else if (accepted && steerNow && _busy && !body.queued && !body.steered) {
       // A steer-flagged send the server neither queued nor injected: it
       // started a turn, so no `queue_push` or `steer_push` echo is coming and
@@ -6964,7 +7135,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         match: m => m.kind === 'stop_event' || m.meta?.kind === 'stop_event',
         render: (m, ctx) => <StopEventCard key={m.meta?.id as string ?? ctx.key} message={m} />,
       },
-      { id: 'notice', roles: ['notice'], render: (m, ctx) => <NoticeCard key={ctx.key} content={m.content} /> },
+      { id: 'notice', roles: ['notice'], render: (m, ctx) => <NoticeCard key={ctx.key} content={m.content} tone={noticeTone(m.meta)} /> },
       {
         // Approval flow: the permission cards own it; grouped, never a standalone row.
         id: 'permission',
@@ -8677,6 +8848,37 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                    above-composer stack, so the card stays flush against the
                    input box and an options row sits above it. */}
                   <AnimatePresence>
+                    {stagedWarnSlot && stagedWarnSlot.slot === activeSlot && (
+                      /* The bubble's caption sits up in the transcript, but the RESEND is
+                         fired HERE, so the warning has to be readable here too. */
+                      <div className="pt-1.5 flex items-baseline gap-2" key="delivery-unconfirmed">
+                        <span className="text-[12px] leading-5 text-warn" role="status">
+                          {i18nT(stagedSendDelivered ? 'pages.chatPage.delivery_delivered'
+                            : 'pages.chatPage.delivery_unconfirmed_resend')}
+                          {!stagedSendDelivered && !discardableRecovery ? ` ${i18nT('pages.chatPage.delivery_unconfirmed_dismiss_note')}` : ''}
+                        </span>
+                        {/* The caption names a duplicate-send danger but the payload it warns
+                            about stays staged, so the warning needs its own way out. */}
+                        {discardableRecovery ? (
+                        <Btn
+                          onClick={discardRecoveredSend}
+                          className="p-0 border-none bg-transparent hover:bg-transparent hover:border-transparent active:scale-100 text-[12px] leading-5 underline text-muted hover:text-text shrink-0"
+                        >
+                          {i18nT(stagedSendDelivered ? 'pages.chatPage.delivery_clear'
+                            : 'pages.chatPage.delivery_discard')}
+                        </Btn>
+                        ) : (
+                        /* A revisit re-arms the caption with no payload to discard, and a warning with
+                           no way out is one the reader can only wait out. This retires it. */
+                        <Btn
+                          onClick={dismissDeliveryWarning}
+                          className="p-0 border-none bg-transparent hover:bg-transparent hover:border-transparent active:scale-100 text-[12px] leading-5 underline text-muted hover:text-text shrink-0"
+                        >
+                          {i18nT(stagedSendDelivered ? 'app.dismiss' : 'pages.chatPage.delivery_dismiss')}
+                        </Btn>
+                        )}
+                      </div>
+                    )}
                     {folderSuggestion && activeSlot ? (
                       <div className="pt-1.5" key="folder-suggestion">
                         <FolderSuggestionCard
@@ -8695,7 +8897,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 </>
               }
               value={input}
-              onChange={setInput}
+              onChange={onComposerInput}
               onSend={() => send()}
               canSteer={composerBusy}
               onSteer={steer}

@@ -169,6 +169,9 @@ class SlotQueueRepository:
             if "_on_consumed" in item or "_on_irreversibly_consumed" in item:
                 return False
             item["content"] = content
+            # A client that MISSED the queue_push cannot otherwise tell an edited entry from a
+            # redacted one, and adopting its pre-send record restores the pre-edit text and files.
+            item["edited"] = True
             if directive_user_origin:
                 item["_directive_user_origin"] = True
             else:
