@@ -488,6 +488,27 @@ teardown. Its three failure modes surface as their own codes at HTTP 500
 (`nudge_retire_failed`, `app_close_hook_failed`, `history_save_failed`), which is
 why the routes now forward a 500 rather than degrading it to 400.
 
+Each of those response bodies carries `definitive` beside `error` and `code`, and the
+value is COMPUTED per arm rather than fixed. The pre-pop arms report
+`_slot_present_and_ours` — the key is still registered AND still holds this slot
+object — and the save-failure arm reports whether its own rollback re-inserted the
+slot. So the flag answers "is the session the caller meant provably still there", which
+is what lets a client tell the two outcomes apart without a copy of the code list
+above:
+
+- **refused** (`definitive: true`) — the gateway considered the close and did not
+  take it, every partial step unwound. The session is still open, and closing it
+  again is a well-defined retry.
+- **unknown** (`definitive: false`, or the flag absent when the failure never reached
+  this handler at all, e.g. a transport error) — the key may already have been popped
+  and handed to a replacement, so the close may yet have taken and a second close
+  could reach a DIFFERENT session under the same key. The honest reading is that the
+  outcome is not knowable from the client, so the list must be allowed to settle
+  rather than the close being reissued.
+
+The serializer emits the key unconditionally, so a body from this handler always
+carries the flag; absence is a fact about the transport, not about the close.
+
 **Authorization is re-asserted at the point of no return.** `authorize_target`
 runs before `close_slot`, but `close_slot` then awaits — auto-nudge retirement
 takes the AutoNudge lock, and the app hook awaits external work — and a target
@@ -512,6 +533,43 @@ guard's own status. This is the same "re-gate adjacent to the mutation, comparin
 identity not presence" discipline `create_session` uses for its slot allocation,
 and the same theme as the queued-drain re-check (#5911). The human ✕ path passes
 no check — the person owns the tab and closes it unconditionally.
+
+### Dating a slots snapshot: the server-stamped generation
+
+The pop above happens only after the nudge-lock and app-close-hook awaits, so a read
+issued before the close can be serialized while the closing slot is still listed and
+arrive after it is gone. Applying that reply reinstates the row. Nothing else on the
+wire orders two list replies: `api_chat_slot_resume` restores `slot.created_at`, so
+`created` cannot tell a resumed replacement from the original.
+
+Both transports therefore date every snapshot. `_slots_ws_frame` stamps
+`slotsGeneration` on the push and `api_chat_slots` returns the same counter in an
+`X-Slots-Generation` header — a header rather than an envelope key, because that reply
+is a bare list with consumers outside the SPA. Each also carries a per-process
+`slotsEpoch` / `X-Slots-Epoch`: the counter restarts at 0 in a new gateway, so a
+generation is comparable only WITHIN an epoch, and a client holding a high count would
+otherwise refuse every snapshot a restarted gateway sent. The epoch is keyed into the
+comparison rather than reset on reconnect, which would reopen the in-window race the
+stamp exists to close. `applySlots` records the newest `(epoch, generation)` applied and
+refuses a snapshot at or below it within the same epoch, on either transport.
+
+The stamp is drawn BEFORE the rows are read, through `DashboardState.stamped_slots`,
+which is why both emitting paths take it from there rather than calling
+`next_slots_generation` themselves. Serializing first and stamping after leaves a window
+in which a close pops a slot between the two, so the frame carries pre-pop rows under a
+number drawn later than the post-pop read's — the resurrection restated, not fixed.
+
+The client still carries the reconstruction it needed before the wire could date a
+reply: `closeSeq`, `pendingSlotReads`, the close tombstones in `closingSlots`, and
+`CloseTombstone.retireReadId` with the confirming post-DELETE read it names, plus
+`membershipMoved` and the wholesale refusal in `fetchSlots.fulfilled` that discards a
+refused reply's content (titles, previews, running state) along with its membership. The
+refusal costs freshness rather than correctness, because live pushes keep applying
+content to the rows that remain. With the stamp shipping, that machinery is redundant
+rather than merely improvable, and the list above is the exact deletion scope. Nothing
+mechanical forces the deletion: it is ordinary tracked follow-up work, owed once the
+refusal has proved itself in production, and the optimistic hide stays for latency
+without being load-bearing for correctness.
 
 ## Configuration
 

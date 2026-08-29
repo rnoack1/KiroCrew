@@ -3,14 +3,16 @@ import { createPortal } from 'react-dom'
 import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore, store } from './store'
-import { fetchSlots, sseStatus, setUpdateProgress, setEnabledAppIds, changeApprovalMode, updateSlot } from './store/dashboardSlice'
+import ErrorNotice from './components/ErrorNotice'
+import { CLOSE_FAILURE_COPY_KEY, CLOSE_FAILURE_TITLE_KEY } from './utils/sessionCloseFailure'
+import { sseStatus, setUpdateProgress, setEnabledAppIds, changeApprovalMode, updateSlot, fetchSlotsIfApplied } from './store/dashboardSlice'
 import { pendingSlotSwitch, pendingSlotSwitchTarget, performSlotSwitch } from './lib/slotSwitch'
 import { performAgentSlotSwitch } from './lib/agentSwitch'
 // Side-effect: registers every built-in surface in the registry. MUST run
 // before `getBuiltinSurfaces()` is invoked below to compute `NAV_ITEMS`.
 import './surfaces/builtins'
 import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention, surfaceLabel, surfacePreviewEnabled } from './surfaces/registry'
-import { createSlot, appendSlotMessage, setAgentSwitchNotice, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
+import { createSlot, appendSlotMessage, setAgentSwitchNotice, setSessionCloseFailure, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
 import { queryComposerOrExpand } from './pages/chat/composerFocus'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain, chatDeepLinkSlot } from './utils/navIntent'
@@ -2204,6 +2206,15 @@ export default function App() {
     const timer = window.setTimeout(() => dispatch(setAgentSwitchNotice(null)), 6000)
     return () => window.clearTimeout(timer)
   }, [agentSwitchNotice, dispatch])
+  const sessionCloseFailure = useAppSelector(s => s.chat.sessionCloseFailure)
+  useEffect(() => {
+    if (!sessionCloseFailure) return
+    // Only `refused` expires. The `unknown` copy carries advice for a LATER moment — check
+    // the row if it comes back — so a timer can retire it before that moment arrives.
+    if (sessionCloseFailure.kind !== 'refused') return
+    const timer = window.setTimeout(() => dispatch(setSessionCloseFailure(null)), 12000)
+    return () => window.clearTimeout(timer)
+  }, [sessionCloseFailure, dispatch])
   const switchActiveSlotAgent = useCallback(async (slot: string, agent: string) => {
     dispatch(setAgentSwitchNotice(null))
     try {
@@ -2672,12 +2683,11 @@ export default function App() {
   }, [location.pathname])
 
   useEffect(() => {
-    dispatch(fetchSlots()).then(action => {
+    // Skip entirely unless the read APPLIED: a refused list omits a session created
+    // mid-read, and at boot the store is no better, so either would delete live state.
+    void fetchSlotsIfApplied(dispatch, () => store.getState()).then(live => {
       // Run localStorage GC after we know which sessions are alive
-      if (fetchSlots.fulfilled.match(action)) {
-        const liveIds = new Set((action.payload as Array<{ key: string }>).map(s => s.key))
-        gcOrphanedStorage(liveIds)
-      }
+      if (live) gcOrphanedStorage(new Set(live.map(s => s.key)))
     })
     // The boot notifications fetch is owned by the WebSocket first-connect
     // handler (its snapshot is taken after socket registration, so nothing
@@ -3614,6 +3624,23 @@ export default function App() {
         <div role="status" className="fixed z-[70] top-safe-offset-14 left-safe-offset-4 right-safe-offset-4 sm:left-auto sm:w-[440px] bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 shadow-xl animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
           <span className="text-sm text-text flex-1">{agentSwitchNotice.message}</span>
           <button onClick={() => dispatch(setAgentSwitchNotice(null))} aria-label={i18nT('app.dismiss')} className="text-muted hover:text-text leading-none p-0.5"><X className="lucide-inline w-4 h-4" /></button>
+        </div>
+      )}
+
+      {sessionCloseFailure && (
+        <div className="fixed z-[70] top-safe-offset-14 left-safe-offset-4 right-safe-offset-4 sm:left-auto sm:w-[440px] animate-rise">
+          {/* Hand-off ON: nothing here is unsaved. The close is an action failure whose
+           *  session is server-side, and the composer's drafts are localStorage-persisted. */}
+          <ErrorNotice
+            title={i18nT(CLOSE_FAILURE_TITLE_KEY[sessionCloseFailure.kind], {
+              // The key is what the sidebar shows for an untitled row.
+              title: sessionCloseFailure.title || sessionCloseFailure.key || '',
+            })}
+            message={i18nT(CLOSE_FAILURE_COPY_KEY[sessionCloseFailure.kind])}
+            onDismiss={() => dispatch(setSessionCloseFailure(null))}
+            askAgent
+            testId="session-close-failed"
+          />
         </div>
       )}
 

@@ -319,6 +319,11 @@ def _slots_serialization_note(slots_data: object) -> str:
         return "[slots-broadcast] slot projection is not JSON-serializable (offender walk failed)"
 
 
+#: Identifies THIS gateway process. ``slotsGeneration`` restarts at 0 in a new one, so a
+#: generation is comparable only within an epoch; clients key staleness on the PAIR.
+SLOTS_EPOCH = uuid.uuid4().hex
+
+
 def _slots_ws_frame(
     slots: object,
     *,
@@ -328,6 +333,7 @@ def _slots_ws_frame(
     folders: object,
     folders_gen: object,
     governance_gen: object,
+    slots_gen: object,
 ) -> str:
     """Serialize the dashboard-user ``slots`` WS frame.
 
@@ -354,6 +360,12 @@ def _slots_ws_frame(
         {
             "type": "slots",
             "data": slots,
+            # Monotonic per emitted snapshot on BOTH transports: a push serialized before
+            # the pop but delivered after the close's GET carries a LOWER value.
+            "slotsGeneration": slots_gen,
+            # Beside the counter, never instead of it: the counter restarts at 0 in a new
+            # process, so only the PAIR is comparable across a gateway restart.
+            "slotsEpoch": SLOTS_EPOCH,
             "yolo": yolo,
             "channelTrusted": channel_trusted,
             "gitlabHostsGeneration": gitlab_hosts_gen,
@@ -4845,13 +4857,14 @@ class DashboardState:
     # below; these only supply the "nothing suspended, not restoring" baseline.
     _slots_push_suspend: int = 0
     _slots_push_pending: bool = False
+    _slots_generation: int = 0
     restoring_open_slots: bool = False
     # push_slots_update() coalescing state, on that same read path. The lock
     # defaults to None rather than to a shared Lock(): a None lock means "no
     # coalescing", so a __new__-built state broadcasts straight through instead
     # of every instance in the process contending on one class-level mutex.
     # __init__ installs the real per-instance lock.
-    _slots_broadcast_lock: "threading.Lock | None" = None
+    _slots_broadcast_lock: "threading.RLock | None" = None
     _slots_broadcast_timer: "asyncio.TimerHandle | None" = None
     _slots_broadcast_last: float = 0.0
     # The one loop this dashboard is served on. Every surface that hands work in
@@ -5037,9 +5050,10 @@ class DashboardState:
         # Depth + pending flag for suspend_slots_push(); see that method.
         self._slots_push_suspend = 0
         self._slots_push_pending = False
-        # Time-based coalescing state for push_slots_update(). Guarded by a
-        # threading.Lock because callers are not all on the event loop.
-        self._slots_broadcast_lock = threading.Lock()
+        self._slots_generation = 0
+        # Time-based coalescing state for push_slots_update(), guarded because callers
+        # are not all on the event loop. REENTRANT: see `stamped_slots` for why.
+        self._slots_broadcast_lock = threading.RLock()
         # True while the startup open-tab restore is in flight. Suppresses the
         # open_slots.json snapshot so a periodic flush cannot overwrite the file
         # being restored from with a half-populated slot set — see
@@ -7581,7 +7595,11 @@ class DashboardState:
         return payload
 
     def serialize_slots(
-        self, *, include_check_status: bool = False, dashboard_user: bool = False
+        self,
+        *,
+        include_check_status: bool = False,
+        dashboard_user: bool = False,
+        rows: "tuple[_ChatSlot, ...] | None" = None,
     ) -> list:
         """Serialize slots, optionally including owner-only provider status.
 
@@ -7591,10 +7609,15 @@ class DashboardState:
         repository is known public, which any authenticated dashboard user
         (``dashboard_user=True``) may see because that lifecycle is already
         world-visible. Private/unknown repos and app tokens stay owner-only.
+
+        ``rows`` lets a caller hand in a membership snapshot it captured earlier,
+        so the ordering-sensitive part (WHICH slots) can be pinned under a lock
+        while this loop — the expensive part — runs without one. See
+        ``stamped_slots``. Omitted, it reads the live membership as before.
         """
         out = []
         subs = getattr(self, "subagents", None)
-        for s in self._slots.values():
+        for s in self._slots.values() if rows is None else rows:
             self._drop_orphaned_mcp_report(s)
             d = self.serialize_slot(
                 s,
@@ -7687,6 +7710,91 @@ class DashboardState:
                             "original exception is chained below as __context__"
                         )
                     raise
+
+    def next_slots_generation(self) -> int:
+        """Stamp for one emitted slots snapshot, monotonic across both transports.
+
+        Incremented per EMISSION rather than per mutation, because the client uses
+        it only to order the snapshots it receives: a frame carrying a lower value
+        than one already applied was serialized earlier, whichever transport it
+        arrived on. That is precisely the cross-transport race a delayed pre-pop
+        push loses to the close's own GET.
+
+        Drawn under the broadcast lock because ``+= 1`` is a read-modify-write and the
+        two emitting paths are on DIFFERENT threads: the event loop serves the GET and
+        the WS connect, while the leading-edge ``_do_slots_broadcast`` runs on whatever
+        foreign thread called ``push_slots_update``. An interleave hands two distinct
+        snapshots the SAME number, and the client treats an equal generation as stale,
+        so whichever applied second would be dropped (Opus 4.8 on #6807).
+
+        The lock is REENTRANT, so `stamped_slots` may already hold it when it reaches
+        this seam -- which is exactly how the draw and the row read are kept atomic
+        with respect to each other. Re-acquiring here is therefore free, and this
+        stays the only place the counter is incremented.
+        """
+        lock = self._slots_broadcast_lock
+        if lock is None:
+            self._slots_generation = int(getattr(self, "_slots_generation", 0)) + 1
+            return self._slots_generation
+        with lock:
+            self._slots_generation = int(getattr(self, "_slots_generation", 0)) + 1
+            return self._slots_generation
+
+    def stamped_slots(
+        self, *, include_check_status: bool = False, dashboard_user: bool = False
+    ) -> tuple[int, list]:
+        """Draw the generation and read the rows as ONE atomic step.
+
+        The stamp must precede the read, not follow it. Serializing first and
+        stamping afterwards leaves a window (the ``json.dumps`` of the whole slot
+        list is not cheap) in which a close pops a slot between the two: the frame
+        then carries PRE-pop rows under a number drawn later than the post-pop
+        GET's, so the client ranks the older rows newer and resurrects the closed
+        one — the very defect the stamp exists to prevent (GPT #6807 F1). Stamping
+        first makes that frame's number lower than the GET's, so it is refused.
+
+        Ordering the numbers is NOT enough on its own, so the stamp and the
+        MEMBERSHIP read are taken together under the lock. With them separated, two
+        emitters on different threads interleave as F.stamp, S.stamp, S.read, close,
+        F.read -- the frame holding the HIGHER number then carries the rows read
+        BEFORE the close, the client applies the closed row and refuses the newer
+        frame that omits it, and the row reappears and stays (GPT 5.6 on #6807).
+
+        Serialization deliberately runs OUTSIDE the lock, on that snapshot. Holding
+        it across the whole `serialize_slots` would put the event loop -- which serves
+        the GET and the WS connect -- behind a foreign broadcast thread mid-serialize,
+        and the repo's no-blocking-call-on-event-loop anchor forbids exactly that
+        (Design Review on #6807). Membership is what the ordering rests on: a close
+        pops the slot, so a snapshot taken with the stamp cannot disagree with it.
+
+        Pairing the two here rather than at each call site is what keeps it true:
+        every emitting path draws its number through this seam, so no caller can
+        reorder them, and a new emitter inherits the ordering by construction.
+        """
+        generation, rows = self.stamped_slot_rows()
+        return generation, self.serialize_slots(
+            include_check_status=include_check_status,
+            dashboard_user=dashboard_user,
+            rows=rows,
+        )
+
+    def stamped_slot_rows(self) -> "tuple[int, tuple]":
+        """Draw the generation and capture membership as ONE atomic step.
+
+        Split from `stamped_slots` because a broadcast emits SEVERAL audience variants
+        for one snapshot -- bare, dashboard-user, owner -- and each must be serialized
+        from THIS tuple. Re-reading live membership for a second audience while reusing
+        the first one's number lets a slot created after the stamp ride out under it; a
+        concurrent GET then draws a HIGHER number without that slot, the client ranks the
+        GET newer and evicts a live session's cached state (GPT 5.6 on #6807). Returning
+        the rows rather than a serialized list is what makes the sharing possible: the
+        variants differ only in the fields they render, never in the membership.
+        """
+        lock = self._slots_broadcast_lock
+        # A `__new__`-built state carries no lock; there is no second emitter to order
+        # against either, so the pairing is already atomic.
+        with lock if lock is not None else contextlib.nullcontext():
+            return self.next_slots_generation(), tuple(self._slots.values())
 
     def push_slots_update(self) -> None:
         """Push slots, keeping provider status confined to owner websockets.
@@ -7829,8 +7937,11 @@ class DashboardState:
         # any app token allowed that route. Keep the broadcast list bare and put
         # the public-repo enrichment only on the WS path, where
         # ``_serialize_for_client`` re-filters app tokens.
-        slots_data = self.serialize_slots()
-        slots_data_ws = self.serialize_slots(dashboard_user=True)
+        # ONE stamp AND one membership capture per broadcast, shared by every audience:
+        # a variant re-reading live rows would carry a snapshot this number never named.
+        slots_gen, slots_rows = self.stamped_slot_rows()
+        slots_data = self.serialize_slots(rows=slots_rows)
+        slots_data_ws = self.serialize_slots(dashboard_user=True, rows=slots_rows)
         # The evidenced way this broadcast fails is a non-serializable value in
         # slot state (#6522, #8745): the dump raises, and the bare TypeError
         # names neither the slot nor the field. Serialize up front and annotate
@@ -7883,6 +7994,7 @@ class DashboardState:
                 "_yolo": yolo_active,
                 "slots": slots_json,
                 "channelTrusted": ch_trusted,
+                "slotsGeneration": slots_gen,
                 "gitlabHostsGeneration": gitlab_hosts_generation(),
                 # getattr, not self._folders: this read path runs on EVERY slots
                 # push, including on a __new__-built DashboardState that seeded only
@@ -7913,7 +8025,7 @@ class DashboardState:
         # other.
         owner_ws_clients = getattr(self, "_owner_ws_clients", None)
         if owner_ws_clients:
-            owner_slots = self.serialize_slots(include_check_status=True)
+            owner_slots = self.serialize_slots(include_check_status=True, rows=slots_rows)
             self._send_ws_owners(
                 _slots_ws_frame(
                     owner_slots,
@@ -7923,6 +8035,7 @@ class DashboardState:
                     folders=_safe_folder_tree(getattr(self, "_folders", None)),
                     folders_gen=self.folders_generation(),
                     governance_gen=answer_generation,
+                    slots_gen=slots_gen,
                 )
             )
 
@@ -8046,6 +8159,7 @@ class DashboardState:
                     folders=note.get("folders"),
                     folders_gen=note.get("foldersGeneration"),
                     governance_gen=note.get("governanceGeneration"),
+                    slots_gen=note.get("slotsGeneration"),
                 )
             elif msg_type == "slot_title":
                 ws_data = {"key": note["key"], "title": note["title"]}

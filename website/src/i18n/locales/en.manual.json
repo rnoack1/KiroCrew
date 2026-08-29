@@ -2851,11 +2851,15 @@
       "working": "Working"
     },
     "useSessionActions": {
+      "close_failed_refused": "It is still open, so you can close it again.",
+      "close_failed_unknown": "Don't close it again yet. If it reappears, check its messages to see where it left off. This message clears if the session leaves the list.",
       "close_this_session": "Close this session?",
       "reload_failed": "Session reload failed. The agent may be mid-turn or the gateway unreachable; try again when the session is idle.",
       "reload_failed_subagents": "Sub-agents are still working on this session. Try again when they finish.",
       "switch_to_autopilot_mode_future_messages_will_us": "Switch to Autopilot mode? Future messages will use autopilot behavior (plan → approve → execute).",
-      "switch_to_normal_chat_mode_future_messages_will": "Switch to normal Chat mode? Future messages will use standard chat behavior."
+      "switch_to_normal_chat_mode_future_messages_will": "Switch to normal Chat mode? Future messages will use standard chat behavior.",
+      "close_failed_refused_title": "The gateway refused to close “{{title}}”",
+      "close_failed_unknown_title": "Couldn't confirm “{{title}}” closed"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet unavailable",

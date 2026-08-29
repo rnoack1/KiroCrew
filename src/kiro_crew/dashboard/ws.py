@@ -16,7 +16,7 @@ from kiro_crew import shutdown_event
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
 from kiro_crew.dashboard.handlers.updates import status_update_fields
 from kiro_crew.dashboard.origin import check_origin
-from kiro_crew.dashboard.state import DashboardState, _safe_folder_tree
+from kiro_crew.dashboard.state import SLOTS_EPOCH, DashboardState, _safe_folder_tree
 from kiro_crew.dashboard.ws_event_scope import (
     _audit_allow,
     _audit_deny,
@@ -626,7 +626,9 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
     initial_answer_generation = governance_answer_generation()
     try:
         is_dashboard_user = ws.get("_is_dashboard_user", False)
-        all_slots = state.serialize_slots(
+        # Stamped, and drawn BEFORE the rows: this frame is a full authoritative snapshot,
+        # so an undated one is never refused and can remove a slot a newer GET carried.
+        initial_slots_generation, all_slots = state.stamped_slots(
             include_check_status=owner_request, dashboard_user=is_dashboard_user
         )
         if is_dashboard_user:
@@ -681,6 +683,10 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                 # detectable as a change rather than as a first sighting.
                 "gitlabHostsGeneration": gitlab_hosts_generation(),
                 "governanceGeneration": initial_answer_generation,
+                # The pair the client orders slot snapshots by. Without it this frame is
+                # undated, and an undated snapshot is never refused.
+                "slotsGeneration": initial_slots_generation,
+                "slotsEpoch": SLOTS_EPOCH,
             }
         )
         if owner_request or is_dashboard_user:

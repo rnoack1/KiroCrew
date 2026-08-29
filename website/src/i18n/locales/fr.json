@@ -8128,11 +8128,15 @@
       "working": "En cours"
     },
     "useSessionActions": {
+      "close_failed_refused": "La session est toujours ouverte, vous pouvez la fermer à nouveau.",
+      "close_failed_unknown": "Ne la fermez pas encore une fois. Si elle réapparaît, vérifiez ses messages pour voir où elle s’est arrêtée. Ce message disparait si la session quitte la liste.",
       "close_this_session": "Fermer cette session ?",
       "reload_failed": "Échec du rechargement de la session. L'agent est peut-être en train de répondre ou la passerelle est injoignable ; réessayez quand la session est inactive.",
       "reload_failed_subagents": "Des sous-agents travaillent encore sur cette session. Réessayez quand ils auront terminé.",
       "switch_to_autopilot_mode_future_messages_will_us": "Passer en mode autopilote ? Les prochains messages utiliseront le comportement autopilote (planifier → approuver → exécuter).",
-      "switch_to_normal_chat_mode_future_messages_will": "Passer en mode Chat normal ? Les prochains messages utiliseront le comportement de chat standard."
+      "switch_to_normal_chat_mode_future_messages_will": "Passer en mode Chat normal ? Les prochains messages utiliseront le comportement de chat standard.",
+      "close_failed_refused_title": "La passerelle a refusé de fermer « {{title}} »",
+      "close_failed_unknown_title": "Impossible de confirmer la fermeture de « {{title}} »"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet indisponible",

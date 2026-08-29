@@ -7914,11 +7914,15 @@
       "working": "工作中"
     },
     "useSessionActions": {
+      "close_failed_refused": "该会话仍处于打开状态，可以再次关闭。",
+      "close_failed_unknown": "请先不要再次关闭。如果它重新出现在列表中，请查看其消息，了解它进行到哪一步。如果该会话从列表中消失，此提示会关闭。",
       "close_this_session": "关闭此会话？",
       "reload_failed": "会话重新加载失败。代理可能正在处理消息或网关不可达；请等会话空闲后重试。",
       "reload_failed_subagents": "该会话的子代理仍在工作中。等它们完成后再试。",
       "switch_to_autopilot_mode_future_messages_will_us": "切换到自动驾驶模式？后续消息将采用自动驾驶行为（规划 → 审批 → 执行）。",
-      "switch_to_normal_chat_mode_future_messages_will": "切换到普通聊天模式？后续消息将采用标准聊天行为。"
+      "switch_to_normal_chat_mode_future_messages_will": "切换到普通聊天模式？后续消息将采用标准聊天行为。",
+      "close_failed_refused_title": "网关拒绍关闭“{{title}}”",
+      "close_failed_unknown_title": "无法确认“{{title}}”是否已关闭"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet 不可用",

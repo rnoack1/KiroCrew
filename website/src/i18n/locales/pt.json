@@ -8128,11 +8128,15 @@
       "working": "Trabalhando"
     },
     "useSessionActions": {
+      "close_failed_refused": "A sessão continua aberta, então você pode fechá-la novamente.",
+      "close_failed_unknown": "Não feche novamente por enquanto. Se ela reaparecer, verifique suas mensagens para ver onde parou. Esta mensagem desaparece se a sessão sair da lista.",
       "close_this_session": "Fechar esta sessão?",
       "reload_failed": "Falha ao recarregar a sessão. O agente pode estar no meio de um turno ou o gateway inacessível; tente novamente quando a sessão estiver ociosa.",
       "reload_failed_subagents": "Os subagentes ainda estão trabalhando nesta sessão. Tente novamente quando terminarem.",
       "switch_to_autopilot_mode_future_messages_will_us": "Mudar para o modo Autopilot? As próximas mensagens usarão o comportamento do autopilot (planejar → aprovar → executar).",
-      "switch_to_normal_chat_mode_future_messages_will": "Mudar para o modo Chat normal? As próximas mensagens usarão o comportamento padrão de chat."
+      "switch_to_normal_chat_mode_future_messages_will": "Mudar para o modo Chat normal? As próximas mensagens usarão o comportamento padrão de chat.",
+      "close_failed_refused_title": "O gateway recusou fechar “{{title}}”",
+      "close_failed_unknown_title": "Não foi possível confirmar se “{{title}}” foi fechada"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet indisponível",

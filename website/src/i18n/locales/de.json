@@ -8021,11 +8021,15 @@
       "working": "Arbeitet"
     },
     "useSessionActions": {
+      "close_failed_refused": "Die Sitzung ist weiterhin geöffnet, Sie können sie erneut schließen.",
+      "close_failed_unknown": "Schließen Sie die Sitzung noch nicht erneut. Prüfen Sie, falls sie wieder erscheint, ihre Nachrichten, um zu sehen, wo sie stehen geblieben ist. Diese Meldung verschwindet, wenn die Sitzung aus der Liste verschwindet.",
       "close_this_session": "Diese Sitzung schließen?",
       "reload_failed": "Sitzung konnte nicht neu geladen werden. Der Agent ist möglicherweise mitten in einem Zug oder das Gateway ist nicht erreichbar; versuchen Sie es erneut, wenn die Sitzung inaktiv ist.",
       "reload_failed_subagents": "Unteragenten arbeiten noch an dieser Sitzung. Versuchen Sie es erneut, wenn sie fertig sind.",
       "switch_to_autopilot_mode_future_messages_will_us": "In den Autopilot-Modus wechseln? Zukünftige Nachrichten verwenden das Autopilot-Verhalten (planen → genehmigen → ausführen).",
-      "switch_to_normal_chat_mode_future_messages_will": "In den normalen Chat-Modus wechseln? Zukünftige Nachrichten verwenden das Standard-Chat-Verhalten."
+      "switch_to_normal_chat_mode_future_messages_will": "In den normalen Chat-Modus wechseln? Zukünftige Nachrichten verwenden das Standard-Chat-Verhalten.",
+      "close_failed_refused_title": "Das Gateway hat das Schließen von „{{title}}“ abgelehnt",
+      "close_failed_unknown_title": "Es konnte nicht bestätigt werden, ob „{{title}}“ geschlossen wurde"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "Audio-Worklet nicht verfügbar",

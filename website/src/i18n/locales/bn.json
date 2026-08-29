@@ -8021,11 +8021,15 @@
       "working": "কাজ করছে"
     },
     "useSessionActions": {
+      "close_failed_refused": "সেশনটি এখনও খোলা আছে, তাই আপনি এটি আবার বন্ধ করতে পারেন।",
+      "close_failed_unknown": "এখনই আবার বন্ধ করবেন না। তালিকায় আবার দেখা গেলে এর বার্তাগুলি দেখে নিন যে এটি কোথায় শেষ হয়েছিল। সেশনটি তালিকা থেকে সরে গেলে এই বার্তাটি বন্ধ হবে।",
       "close_this_session": "এই সেশন বন্ধ করবে?",
       "reload_failed": "সেশন পুনরায় লোড ব্যর্থ হয়েছে। এজেন্ট ব্যস্ত থাকতে পারে বা গেটওয়ে পৌঁছানো যাচ্ছে না; সেশন নিষ্ক্রিয় হলে আবার চেষ্টা করুন।",
       "reload_failed_subagents": "এই সেশনে সাব-এজেন্টরা এখনও কাজ করছে। তারা শেষ করলে আবার চেষ্টা করুন।",
       "switch_to_autopilot_mode_future_messages_will_us": "Autopilot মোডে যাবে? পরের মেসেজগুলো Autopilot আচরণ অনুসরণ করবে (প্ল্যান → অনুমোদন → এক্সিকিউট)।",
-      "switch_to_normal_chat_mode_future_messages_will": "সাধারণ চ্যাট মোডে যাবে? পরের মেসেজগুলো সাধারণ চ্যাট আচরণ অনুসরণ করবে।"
+      "switch_to_normal_chat_mode_future_messages_will": "সাধারণ চ্যাট মোডে যাবে? পরের মেসেজগুলো সাধারণ চ্যাট আচরণ অনুসরণ করবে।",
+      "close_failed_refused_title": "গेটওয়ে “{{title}}” বন্ধ করতে অস্বীকার করেছে",
+      "close_failed_unknown_title": "“{{title}}” বন্ধ হয়েছে কিনা তা নিশ্চিত করা যায়নি"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "অডিও ওয়ার্কলেট পাওয়া যাচ্ছে না",

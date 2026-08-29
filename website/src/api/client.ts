@@ -2977,7 +2977,23 @@ export const api = {
   fetchIssueSource: (url: string, refresh = false) => post('/api/source/issue', { url, refresh }).then(j) as Promise<IssueSource>,
   /** Top contributors to an app's source repo (GitHub only). Owner-gated. */
   appContributors: (url: string, refresh = false) => post('/api/source/contributors', { url, refresh }).then(j) as Promise<{ contributors: AppContributor[] }>,
-  chatSlots: () => fetch('/api/chat/slots').then(j),
+  /** The slots list plus the server's monotonic `X-Slots-Generation` stamp, which lets a
+   *  caller tell how old a snapshot is. The stamp rides a HEADER because this reply is a
+   *  bare list with consumers outside the SPA (kirocrew_client, mcp_dashboard), so the
+   *  body itself cannot become an object. */
+  chatSlots: async (): Promise<{ slots: ChatSlot[]; generation?: number; epoch?: string }> => {
+    const r = await fetch('/api/chat/slots')
+    const stamp = r.headers.get('X-Slots-Generation')
+    // The counter is only comparable within one gateway process, so the epoch rides with it.
+    const epoch = r.headers.get('X-Slots-Epoch')
+    const slots = (await j(r)) as ChatSlot[]
+    const parsed = stamp === null ? NaN : Number(stamp)
+    return {
+      slots,
+      generation: Number.isFinite(parsed) ? parsed : undefined,
+      epoch: epoch ?? undefined,
+    }
+  },
   /** All goal loops across sessions — every record the service holds, ACTIVE
    *  OR STOPPED (a stopped loop keeps `active: false` + `stopped_reason`, which
    *  is how a surface can say WHY a patrol went quiet). Returns

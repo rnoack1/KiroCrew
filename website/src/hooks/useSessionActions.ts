@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
 import { store, useAppDispatch } from '../store'
-import { deleteSlot, switchSlot } from '../store/chatSlice'
+import { closeSlotWithNotice, switchSlot } from '../store/chatSlice'
 import { updateSlotPin, updateSlot, markSlotRead, markSlotUnread } from '../store/dashboardSlice'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
@@ -100,7 +100,9 @@ export function useSessionActions(mode?: string): SessionActions {
         const slotsGeneration = store.getState().dashboard.slotsGeneration ?? 0
         slots = await queryClient.fetchQuery<ChatSlot[]>({
           queryKey: ['chat-slots', 'pin-reconcile', ++pinReconcileRequestId],
-          queryFn: () => api.chatSlots() as Promise<ChatSlot[]>,
+          // Normalised as the other two call sites do, so a fixture handing back the BARE
+          // list still works; the cast this replaces asserted that shape unconditionally.
+          queryFn: () => api.chatSlots().then(r => (Array.isArray(r) ? r : r.slots)),
           staleTime: 0,
           gcTime: 0,
         })
@@ -319,8 +321,15 @@ export function useSessionActions(mode?: string): SessionActions {
 
   const reload = useCallback((slotKey: string) => { reloadMutate(slotKey) }, [reloadMutate])
 
+  // A terminal close failure restores the row, which alone is indistinguishable
+  // from the flicker `closingSlots` removes — so say so.
   const close = useCallback((slotKey: string) => {
-    if (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
+    if (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useSessionActions.close_this_session'))) {
+      // Read BEFORE the close: a failure notice has to name the session, and the row
+      // is gone from the list by the time that notice renders.
+      const title = store.getState().dashboard.slots.find(s => s.key === slotKey)?.title
+      closeSlotWithNotice(dispatch, slotKey, title)
+    }
   }, [dispatch])
 
   return { duplicate, toggleRead, togglePin, toggleMode, copyLink, move, reload, close }

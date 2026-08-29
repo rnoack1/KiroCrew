@@ -7914,11 +7914,15 @@
       "working": "作業中"
     },
     "useSessionActions": {
+      "close_failed_refused": "セッションはまだ開いているため、もう一度終了できます。",
+      "close_failed_unknown": "まだ終了し直さないでください。一覧に再表示された場合はメッセージを確認して、どこまで進んでいたかを見てください。この通知はセッションが一覧から消えたときに閉じます。",
       "close_this_session": "このセッションを閉じますか？",
       "reload_failed": "セッションの再読み込みに失敗しました。エージェントが応答中かゲートウェイに接続できない可能性があります。セッションがアイドルのときに再試行してください。",
       "reload_failed_subagents": "このセッションのサブエージェントがまだ動作中です。完了してから再試行してください。",
       "switch_to_autopilot_mode_future_messages_will_us": "オートパイロットモードに切り替えますか？今後のメッセージはオートパイロット動作（プラン→承認→実行）を使用します。",
-      "switch_to_normal_chat_mode_future_messages_will": "通常のチャットモードに切り替えますか？今後のメッセージは標準チャット動作を使用します。"
+      "switch_to_normal_chat_mode_future_messages_will": "通常のチャットモードに切り替えますか？今後のメッセージは標準チャット動作を使用します。",
+      "close_failed_refused_title": "ゲートウェイが「{{title}}」の終了を拒否しました",
+      "close_failed_unknown_title": "「{{title}}」が終了したか確認できませんでした"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "オーディオワークレットが利用できません",
