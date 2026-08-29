@@ -28,6 +28,7 @@ What these tests pin, per the issue's regression gates:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -116,6 +117,212 @@ class TestEnqueueDurability:
         app.router.add_post("/api/chat/slots/{slot}/note", api_chat_slot_note)
         async with TestClient(TestServer(app)) as c:
             yield c
+
+    @pytest.mark.asyncio
+    async def test_an_immediate_note_is_committed_and_visible_in_one_step(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """No row is held back, so a concurrent persist cannot disagree with the response.
+
+        The periodic dirty-slot flush runs unlocked every few seconds and can persist the
+        slot window at any point during this POST. Appending and broadcasting in one step
+        leaves no interval in which the row exists but is not yet owned, so any line that
+        flush writes is one the response already claims. Hiding the row behind a marker the
+        persist path strips would instead give that flush a window to commit a line the
+        caller is told was not added.
+        """
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "one-step")
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/one-step/note", json={"content": "visible at once"}
+            )
+            assert resp.status == 200, await resp.text()
+            body = await resp.json()
+
+        assert body["appended"] is True, f"the row was added, so the response must say so; {body}"
+        rows = [r for r in slot.messages if r.get("cls") == "reconcile-note"]
+        assert len(rows) == 1, f"expected exactly one note row; got {rows}"
+        assert "provisional" not in rows[0].get("meta", {}), (
+            "the row carries a provisional marker, so a flush that strips it can persist a "
+            f"row the response disowns; meta was {rows[0].get('meta')}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_save_that_commits_despite_cancellation_keeps_both_halves(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """If the save commits, cancellation must not strip the note's context half.
+
+        Shutdown cancels the handler but the executor save runs on and commits the row, so
+        a cleanup that withdraws the in-memory halves leaves a restored note the model has
+        no context for. The decision therefore follows the save rather than the unwind:
+        committed means both halves live, and the context half is released to a drain.
+        """
+        import asyncio as _asyncio
+
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+        import kiro_crew.dashboard.chat_runner as runner_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "commits-despite-cancel")
+        slot._pending_context.clear()
+
+        async def _save_commits_after_the_cancel(state_, slot_, *a, **kw):
+            await _asyncio.sleep(0.25)
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_commits_after_the_cancel)
+
+        async with self._make_client(state) as client:
+            posting = _asyncio.ensure_future(
+                client.post(
+                    "/api/chat/slots/commits-despite-cancel/note",
+                    json={"content": "committed but abandoned"},
+                )
+            )
+            await _asyncio.sleep(0.08)
+            posting.cancel()
+            with contextlib.suppress(_asyncio.CancelledError, Exception):
+                await posting
+            # Let the shielded save finish and its resolution callback run.
+            await _asyncio.sleep(0.35)
+
+        rows = [m for m in slot.messages if "committed but abandoned" in str(m.get("content", ""))]
+        drained = runner_mod.drain_pending_context(slot)
+        assert rows and "committed but abandoned" in drained, (
+            "the save committed the row, but cancellation settled the note against the "
+            "unwind instead of the save, so the halves disagree: "
+            f"row_kept={bool(rows)} context_drainable={'committed but abandoned' in drained}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_time_held_for_a_commit_does_not_consume_a_notes_ttl(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Being held for its own commit must not expire a note's context.
+
+        A drain during the durability window holds the entry rather than emitting it, so a
+        short-TTL note whose save outlasts that TTL would be re-queued already expired and
+        silently dropped by the next drain -- lost to the race, not to the caller's TTL.
+        The clock restarts when the entry becomes drainable, so the hold costs it nothing.
+        """
+        import asyncio as _asyncio
+
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+        import kiro_crew.dashboard.chat_runner as runner_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "held-past-its-ttl")
+        slot._pending_context.clear()
+
+        async def _save_outlasting_the_ttl(state_, slot_, *a, **kw):
+            runner_mod.drain_pending_context(slot_)
+            await _asyncio.sleep(0.30)
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_outlasting_the_ttl)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/held-past-its-ttl/note",
+                json={"content": "short lived note", "maxAge": 0.2},
+            )
+            assert resp.status == 200
+            assert (await resp.json())["contextSkipped"] is False
+
+        after = runner_mod.drain_pending_context(slot)
+        assert "short lived note" in after, (
+            "the entry expired while held for its own commit, so the note was lost to the "
+            f"race rather than to its TTL; got {after!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_written_row_reports_appended_even_when_the_forced_save_fails(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """`appended` means "the visible line was written", not "the write reached disk".
+
+        Folding durability into it forked the field's meaning by hidden server state and
+        needed a second field to disambiguate, whose documented handling was identical to
+        `appended: true`. The protection against a channel note outliving its line is the
+        withheld mirror dispatch, not the response flag; retry stays keyed to the two
+        genuine not-accepted signals, `503` and `404`.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "not-durable-contract")
+        slot._pending_context.clear()
+        monkeypatch.setattr(
+            handlers_mod,
+            "snapshot_note_destinations",
+            lambda *a, **kw: (("telegram", "c1"), None),
+        )
+
+        async def _save_raises(state_, slot_, *a, **kw):
+            raise OSError("disk is gone")
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_raises)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/not-durable-contract/note",
+                json={"content": "written but not durable"},
+            )
+            body = await resp.json()
+
+        assert body["appended"] is True, (
+            "a written row must report appended:true -- durability is not what this field "
+            f"means, and the mirror dispatch is what a failed save withholds; {body}"
+        )
+        assert body["visibleDeferred"] is False, f"the note was not held; {body}"
+        assert "visibleNotDurable" not in body, (
+            "the response must not carry a durability field: its documented handling is "
+            f"identical to appended:true, so it told a caller nothing; {body}"
+        )
+        rows = [m for m in slot.messages if "written but not durable" in str(m.get("content"))]
+        assert rows, "precondition: the row must actually be in the window for this to matter"
+
+    @pytest.mark.asyncio
+    async def test_a_full_context_queue_skips_rather_than_evicting_another_caller(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A note must not make room by dropping an entry it cannot give back.
+
+        The queue evicts its oldest entries to fit a new one. That is safe for a caller
+        that keeps what it queues, but a note's entry can be rolled back by a routing
+        race, and the rollback cannot restore what the append evicted -- another
+        caller's queued context would be gone for a note that was then refused. At
+        capacity the note reports contextSkipped instead, leaving the queue untouched.
+        """
+        import kiro_crew.dashboard.state as state_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "context-queue-full")
+        oldest = {"content": "another caller's oldest entry", "source": "other"}
+        slot._pending_context.clear()
+        slot._pending_context.append(oldest)
+        while len(slot._pending_context) < state_mod._MAX_PENDING_CONTEXT:
+            slot._pending_context.append({"content": "filler", "source": "other"})
+        assert slot.pending_context_at_capacity(), "precondition: the queue must be full"
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/context-queue-full/note",
+                json={"content": "a note arriving at a full queue"},
+            )
+            assert resp.status == 200
+            body = await resp.json()
+
+        assert body["contextSkipped"] is True, f"a full queue must report the skip: {body}"
+        assert (
+            slot._pending_context[0] is oldest
+        ), "the note evicted another caller's oldest entry to make room for itself"
+        assert not [
+            e for e in slot._pending_context if "full queue" in str(e.get("content", ""))
+        ], "the note's context was queued despite the cap"
 
     @pytest.mark.asyncio
     async def test_200_means_the_hold_is_already_durable(self, tmp_path: Path, monkeypatch):

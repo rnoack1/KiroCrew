@@ -4785,6 +4785,19 @@ class _ChatSlot:
         """Drop finalized stream chunks from the transcript and live queue."""
         return self._buffers.purge_chunks(self)
 
+    def pending_context_at_capacity(self) -> bool:
+        """True when a further append would evict another caller's LIVE oldest entry.
+
+        ``append_pending_context`` makes room by shedding expired entries first and only
+        then dropping live ones. Shedding is free, so a queue full of dead entries is not
+        at capacity; counting them would lock out an entry the queue has room for. A
+        caller that would rather be skipped than displace someone else's queued context
+        asks this first, because the append itself reports nothing about what it dropped.
+        """
+        now = time.time()
+        live = [e for e in self._pending_context if not context_entry_expired(e, now)]
+        return len(live) >= _MAX_PENDING_CONTEXT
+
     def append_pending_context(self, entry: dict[str, Any]) -> None:
         """Append one live context entry after expiry pruning and FIFO eviction."""
         self._buffers.append_pending_context(
