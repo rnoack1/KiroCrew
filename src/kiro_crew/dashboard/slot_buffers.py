@@ -7,9 +7,27 @@ import json
 import logging
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from typing import Any
 
 from kiro_crew.sel import sel
+
+
+@dataclass
+class DeferredNote:
+    """One note held mid-turn, carrying the mirror dispatch it was authored with.
+
+    A record rather than a dict because ``mirror`` is a cross-module contract: a
+    flush that stops calling it loses the note's channel provenance silently,
+    where a missing field is a type error. ``context`` is cleared once consumed,
+    which is what stops a restored suffix enqueueing it twice.
+    """
+
+    content: str
+    cls: str
+    context: dict[str, Any] | None = None
+    session: str | None = None
+    mirror: Callable[[], None] | None = None
 
 
 def _apply_message_patch(slot: Any, message: dict, content: str | None, meta: dict | None) -> dict:
@@ -142,7 +160,8 @@ class SlotBufferCoordinator:
 
     @staticmethod
     def deferred_context_count(slot: Any) -> int:
-        return sum(1 for note in slot._deferred_notes if note.get("context") is not None)
+        notes: list[DeferredNote] = slot._deferred_notes
+        return sum(1 for note in notes if note.context is not None)
 
     @staticmethod
     def flush_deferred_notes(slot: Any, *, logger: logging.Logger) -> int:
@@ -151,12 +170,12 @@ class SlotBufferCoordinator:
             return 0
         from kiro_crew.dashboard.chat_utils import effective_session_key
 
-        held = slot._deferred_notes[:]
+        held: list[DeferredNote] = slot._deferred_notes[:]
         slot._deferred_notes.clear()
         live_session = effective_session_key(slot)
         written = 0
         for index, note in enumerate(held):
-            authorized_session = note.get("session")
+            authorized_session = note.session
             if authorized_session is not None and authorized_session != live_session:
                 sel().log_api_access(
                     caller="dashboard",
@@ -174,17 +193,18 @@ class SlotBufferCoordinator:
                 )
                 continue
 
-            # Pop is a retry marker: if the visible row fails after the context
-            # was queued, the restored note must not enqueue that context twice.
-            context = note.pop("context", None)
+            # Clearing it is a retry marker: if the visible row fails after the
+            # context was queued, the restored note must not enqueue it twice.
+            context = note.context
+            note.context = None
             try:
                 if context is not None:
                     context["noteSession"] = live_session
                     slot.append_pending_context(context)
                 slot.append(
                     role="inject",
-                    content=note["content"],
-                    cls=note["cls"],
+                    content=note.content,
+                    cls=note.cls,
                     broadcast=True,
                     meta={"noteSession": live_session},
                 )
@@ -193,6 +213,17 @@ class SlotBufferCoordinator:
                 slot._deferred_notes[:0] = held[index:]
                 raise
             written += 1
+            # BOTH halves are committed now, which is the whole reason the mirror waits
+            # for the flush: at POST it would assert content the session never received.
+            if note.mirror is not None:
+                try:
+                    note.mirror()
+                except Exception:
+                    # Never load-bearing: the note is written either way, and the
+                    # suffix-restore above must not fire for a delivery failure.
+                    logger.warning(
+                        "held note mirror dispatch failed for slot %s", slot.key, exc_info=True
+                    )
         return written
 
     @staticmethod

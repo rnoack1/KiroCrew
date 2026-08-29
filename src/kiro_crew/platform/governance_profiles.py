@@ -197,6 +197,7 @@ def audit_governance_degraded(
 # are the high-blast-radius surfaces the profile layer exists to contain.
 _UNATTENDED_SURFACES = frozenset({"cron", "subagent", "background", "heartbeat", "taskrunner"})
 
+
 # Session-key sentinel for an in-process HOST action that is not driven by any
 # user-facing surface (app activation, Slack workspace admission).  Classifies to
 # surface ``host`` (sel._infer_source), giving operators a stable bind target
@@ -363,6 +364,23 @@ def _bump_profile_generation() -> None:
         _PROFILE_GENERATION += 1
 
 
+def _publish_snapshot(store: "ProfileStore", snap: "_Snapshot") -> None:
+    """Install a snapshot AND bump the generation under ONE hold of the reader lock.
+
+    Atomic on purpose. Installing the snapshot first and bumping second would let a
+    reader observe the NEW snapshot carrying the OLD generation, so a sender holding
+    that token would re-confirm an authority the profile layer had already replaced.
+    One critical section removes the window: a reader sees both writes or neither.
+
+    Safe against the store's reload lock, which is always taken FIRST and never taken
+    while this one is held; nothing under this lock does I/O.
+    """
+    global _PROFILE_GENERATION
+    with _PROFILE_GENERATION_LOCK:
+        store._snap = snap
+        _PROFILE_GENERATION += 1
+
+
 def poll_profiles_fresh() -> None:
     """Re-stat the profiles directory and reload if it changed.  MAY BLOCK.
 
@@ -419,6 +437,32 @@ def governance_answer_generation() -> int:
     from kiro_crew.platform.context import governance_generation
 
     return governance_generation() + _profile_generation()
+
+
+def governance_ceiling_unchanged(observed: int | None) -> bool:
+    """Whether the governance answer behind a permit is still the one that was read.
+
+    SYNCHRONOUS, and that is the point: it is the last confirmation before a send,
+    so a coroutine here would reopen the window it exists to close.
+
+    Compares the COMPOSITE, ceiling ∩ profile, because that is what the permit was
+    evaluated against. The ceiling counter alone is blind to a profile tightening,
+    which publishes a new snapshot without installing a context.
+
+    Lives beside the counter it reads rather than in a transport module: nothing
+    about it is Slack-specific, and both the Slack leg and the generic channel
+    ladder re-assert the same token through this one function.
+
+    Both failure arms refuse. ``None`` means the sample never happened, and a
+    raising re-read cannot answer; neither is evidence the permit still holds.
+    """
+    if observed is None:
+        return False
+    try:
+        return governance_answer_generation() == observed
+    except Exception:
+        logger.warning("governance generation re-read failed", exc_info=True)
+        return False
 
 
 def _ceiling_token() -> Tuple[bool, int]:
@@ -640,11 +684,14 @@ class ProfileStore:
                 return
             # COLD: publish an empty index but flag it (one atomic snapshot) so a
             # governed boot aborts rather than run with zero profiles.
-            self._snap = _Snapshot(
-                by_name={},
-                by_bind={},
-                unrecoverable=(f"<dir:{directory}>",),
-                loaded=True,
+            _publish_snapshot(
+                self,
+                _Snapshot(
+                    by_name={},
+                    by_bind={},
+                    unrecoverable=(f"<dir:{directory}>",),
+                    loaded=True,
+                ),
             )
             return
         # Pass 1: parse each file independently; an invalid one becomes deny-all.
@@ -813,12 +860,15 @@ class ProfileStore:
         # governed fleet boot-aborts via ``assert_profiles_within_ceiling``; a
         # standalone host tolerates it. A directory that could not be enumerated
         # already returned early above, leaving the prior snapshot fully intact.
-        self._snap = _Snapshot(
-            by_name=by_name,
-            by_bind=by_bind,
-            unrecoverable=unrec,
-            fallback_profiles=frozenset(fallback_stems),
-            loaded=True,
+        _publish_snapshot(
+            self,
+            _Snapshot(
+                by_name=by_name,
+                by_bind=by_bind,
+                unrecoverable=unrec,
+                fallback_profiles=frozenset(fallback_stems),
+                loaded=True,
+            ),
         )
         # Runtime observability for a POST-BOOT unrecoverable file. The boot floor
         # (``assert_profiles_within_ceiling``) only runs once; a governed RUNNING
@@ -1015,8 +1065,12 @@ def any_configured_profile_governs(ref: str) -> bool:
 
 def reset_store() -> None:
     """Test helper — drop the cached profiles so the next access reloads."""
-    global _STORE
-    _STORE = ProfileStore()
+    global _PROFILE_GENERATION, _STORE
+    # One critical section for the same reason a publication is: a reader must not
+    # see the fresh store's answers carrying the old generation.
+    with _PROFILE_GENERATION_LOCK:
+        _STORE = ProfileStore()
+        _PROFILE_GENERATION += 1
 
 
 def get_store_profile(name: str) -> Optional[Profile]:

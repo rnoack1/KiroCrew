@@ -43,6 +43,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_TOOL_STALL,
 )
 from kiro_crew.dashboard import chat_runner
+from kiro_crew.dashboard.slot_buffers import DeferredNote
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
 from kiro_crew.metrics import turns as turns_mod
@@ -2274,7 +2275,7 @@ class TestStartNextQueuedTurn:
         dispatch path calls it AFTER this function.
         """
         state, slot = _state(tmp_path), _slot()
-        slot._deferred_notes.append({"content": "held", "cls": "reconcile-note"})
+        slot._deferred_notes.append(DeferredNote(content="held", cls="reconcile-note"))
         slot.queue_append("next please")
         state.subagents = None
 
@@ -2303,7 +2304,7 @@ class TestStartNextQueuedTurn:
         delivery, so withholding delays rather than loses it.
         """
         state, slot = _state(tmp_path), _slot()
-        slot._deferred_notes.append({"content": "held", "cls": "reconcile-note"})
+        slot._deferred_notes.append(DeferredNote(content="held", cls="reconcile-note"))
         slot.queue_append("a plain user message")  # carries no `kind`
         slot._in_stage_execution = True
         state.subagents = None
@@ -2317,7 +2318,7 @@ class TestStartNextQueuedTurn:
         # Control: the same fixture with the plan gate CLEAR does flush, so the
         # assertion above measures the stage guard rather than the dequeue hold.
         state2, slot2 = _state(tmp_path), _slot()
-        slot2._deferred_notes.append({"content": "held", "cls": "reconcile-note"})
+        slot2._deferred_notes.append(DeferredNote(content="held", cls="reconcile-note"))
         slot2.queue_append("a plain user message")
         state2.subagents = None
         with (
@@ -2562,7 +2563,9 @@ class TestFinishQueueCycle:
         state, slot = _state(tmp_path), _slot()
         state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
         slot._pending_synthesis = True
-        slot._deferred_notes.append({"content": "held across the close", "cls": "reconcile-note"})
+        slot._deferred_notes.append(
+            DeferredNote(content="held across the close", cls="reconcile-note")
+        )
         # The teardown already dropped it from the registry.
         assert state._slots.get(slot.key) is None
 

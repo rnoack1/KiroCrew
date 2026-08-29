@@ -33,6 +33,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
 from kiro_crew.dashboard import chat_runner
+from kiro_crew.dashboard.slot_buffers import DeferredNote
 from kiro_crew.dashboard.state import _ChatSlot
 
 
@@ -52,12 +53,12 @@ def _hold(slot: _ChatSlot, *texts: str, with_context: bool = True) -> None:
     """Put notes in the held queue the way the /note endpoint does."""
     for text in texts:
         slot._deferred_notes.append(
-            {
-                "content": text,
-                "cls": "reconcile-note",
-                "session": None,
-                "context": {"content": text} if with_context else None,
-            }
+            DeferredNote(
+                content=text,
+                cls="reconcile-note",
+                session=None,
+                context={"content": text} if with_context else None,
+            )
         )
 
 
@@ -98,7 +99,7 @@ class TestPartialFlushKeepsUnwrittenNotes:
         assert calls == ["first", "second"]
         assert [m["content"] for m in slot.messages] == ["first"]
         # The unwritten remainder is what this test is about.
-        assert [n["content"] for n in slot._deferred_notes] == ["second", "third"]
+        assert [n.content for n in slot._deferred_notes] == ["second", "third"]
 
     def test_the_retained_notes_are_delivered_by_the_next_flush(self, tmp_path: Path):
         """Retention is only worth anything if a later flush drains them."""
@@ -294,7 +295,7 @@ class TestSeam4BulkCleanup:
         assert data["archived"] == 0 and data["keys"] == []
         assert data["failed"] == ["stale-flush"], "the failure must be reported, not swallowed"
         assert "stale-flush" in state._slots, "the popped slot must be put back"
-        held = [n["content"] for n in state._slots["stale-flush"]._deferred_notes]
+        held = [n.content for n in state._slots["stale-flush"]._deferred_notes]
         assert held == ["held note"], "the held note must survive for a later flush"
 
     @pytest.mark.asyncio

@@ -49,7 +49,7 @@ from kiro_crew.dashboard.notification_coordinator import NotificationCoordinator
 from kiro_crew.dashboard.remote_mirror import mirror_frame as _mirror_relay_frame
 from kiro_crew.dashboard.session_pulse_counter import increment_user_session_count_off_loop
 from kiro_crew.dashboard.side_state import SideState
-from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
+from kiro_crew.dashboard.slot_buffers import DeferredNote, SlotBufferCoordinator
 from kiro_crew.dashboard.slot_projection import SlotProjection
 from kiro_crew.dashboard.slot_queue_repository import SlotQueueRepository
 from kiro_crew.dashboard.slot_registry import SlotRegistry
@@ -3830,7 +3830,7 @@ class _ChatSlot:
         self.memory_mode: str = memory_mode
         self._ephemeral: bool = ephemeral  # Incognito mode: no memory writes
         self._pending_context: list[dict[str, Any]] = []
-        self._deferred_notes: list[dict[str, Any]] = []
+        self._deferred_notes: list[DeferredNote] = []
         self._app: str = ""  # App identity tag (App Kit §5.2)
         # FIX 1 (unattended approval park). Evidence that a HUMAN has driven
         # this slot through a dashboard-user route (typed a message, answered an

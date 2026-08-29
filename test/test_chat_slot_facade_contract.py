@@ -12,6 +12,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from kiro_crew.dashboard import state as state_module
+from kiro_crew.dashboard.slot_buffers import DeferredNote
 from kiro_crew.dashboard.state import _ChatSlot
 
 _TO_DICT_KEYS = (
@@ -92,7 +93,9 @@ def test_facade_methods_consult_wholesale_replacement_containers() -> None:
     pending: list[dict] = []
     queue: list[dict] = []
     pending_context: list[dict] = []
-    deferred_notes = [{"content": "held", "context": {"content": "context"}}]
+    deferred_notes = [
+        DeferredNote(content="held", cls="reconcile-note", context={"content": "context"})
+    ]
     approval_futures = {"approval-1": SimpleNamespace(done=lambda: False)}
     questions = {"question-1": {"blocking": True}}
     slot.messages = messages

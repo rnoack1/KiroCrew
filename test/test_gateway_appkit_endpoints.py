@@ -36,6 +36,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.handlers import api_mcp_server_detail
+from kiro_crew.dashboard.slot_buffers import DeferredNote
 from kiro_crew.dashboard.state import _MAX_PENDING_CONTEXT, DashboardState, _ChatSlot
 
 # ---------------------------------------------------------------------------
@@ -1822,7 +1823,7 @@ class TestNoteEndpoint:
             assert data["contextSkipped"] is True
             assert data["visibleDeferred"] is True
 
-        assert slot._deferred_notes[0]["context"] is None
+        assert slot._deferred_notes[0].context is None
         slot.task = None
         assert slot.flush_deferred_notes() == 1
         assert [m["content"] for m in slot.messages] == ["held"]
@@ -1882,7 +1883,7 @@ class TestNoteEndpoint:
             resp = await client.post("/api/chat/slots/s1/note", json={"content": "n"})
             assert resp.status == 200
 
-        assert slot._deferred_notes[0]["session"] == effective_session_key(slot)
+        assert slot._deferred_notes[0].session == effective_session_key(slot)
         slot.task = None
 
     @pytest.mark.asyncio
@@ -2607,7 +2608,7 @@ class TestNoteEndpoint:
             assert (await resp.json())["visibleDeferred"] is True
 
         # The turn outlives the note's TTL, so the held entry is dead by flush time.
-        held = slot._deferred_notes[0]["context"]
+        held = slot._deferred_notes[0].context
         held["injectedAt"] = time.time() - 10
         now = time.time()
         for i in range(_MAX_PENDING_CONTEXT):
@@ -2816,7 +2817,7 @@ class TestNoteEndpoint:
         async def _mock_run_chat(state, slot, message, **kwargs):
             slot.append("assistant", "done", "msg msg-a")
             slot._deferred_notes.append(
-                {"content": "away note", "cls": "reconcile-note", "context": None}
+                DeferredNote(content="away note", cls="reconcile-note", context=None)
             )
             # A refusal-recovery continuation owns the task past the stage exit.
             slot.task = asyncio.get_running_loop().create_future()
@@ -2881,7 +2882,7 @@ class TestNoteEndpoint:
 
         async def _mock_run_chat(state, slot, message, **kwargs):
             slot._deferred_notes.append(
-                {"content": "away note", "cls": "reconcile-note", "context": None}
+                DeferredNote(content="away note", cls="reconcile-note", context=None)
             )
             started.set()
             await asyncio.sleep(5)
@@ -2918,7 +2919,7 @@ class TestNoteEndpoint:
 
         async def _mock_run_chat(state, slot, message, **kwargs):
             slot._deferred_notes.append(
-                {"content": "away note", "cls": "reconcile-note", "context": None}
+                DeferredNote(content="away note", cls="reconcile-note", context=None)
             )
             await asyncio.sleep(5)
 
@@ -2952,7 +2953,11 @@ class TestAutomaticSuccessorsDoNotConsumeNotes:
         slot = _ChatSlot("s1")
         state._slots["s1"] = slot
         slot._deferred_notes.append(
-            {"content": "owed to the next user turn", "cls": "reconcile-note", "context": None}
+            DeferredNote(
+                content="owed to the next user turn",
+                cls="reconcile-note",
+                context=None,
+            )
         )
 
         # Head of the queue is AUTOMATIC (carries a structural origin tag).

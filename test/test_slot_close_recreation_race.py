@@ -51,6 +51,7 @@ from kiro_crew import autonudge
 from kiro_crew import members as members_mod
 from kiro_crew.autonudge import AutoNudgeService
 from kiro_crew.dashboard import chat_handlers as handlers
+from kiro_crew.dashboard.slot_buffers import DeferredNote
 from kiro_crew.dashboard.state import SlotOrigin
 
 NAME = "chat-1-1785"
@@ -1333,7 +1334,7 @@ async def test_cleanup_handover_persists_the_tail_and_the_held_notes(tmp_path) -
     state = _make_state(tmp_path)
     original = await _slot_with_committed_and_uncommitted_rows(state)
     original._deferred_notes.append(
-        {"content": "HELD-NOTE", "cls": "msg msg-note", "session": HKEY}
+        DeferredNote(content="HELD-NOTE", cls="msg msg-note", session=HKEY)
     )
     _make_stale(state)
 
