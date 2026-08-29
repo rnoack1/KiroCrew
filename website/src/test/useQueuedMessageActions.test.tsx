@@ -40,7 +40,7 @@ const apiMocks = vi.hoisted(() => ({
 }))
 vi.mock('../api/client', () => ({ api: apiMocks }))
 
-import { useQueuedMessageActions, queuedSendStash, type QueuedMessageActions } from '../hooks/useQueuedMessageActions'
+import { useQueuedMessageActions, queuedSendStash, preSendStash, adoptPreSendStash, type QueuedMessageActions } from '../hooks/useQueuedMessageActions'
 
 const queued = (queueId: string, content: string): ChatMessage =>
   ({ role: 'queued', content, cls: 'msg msg-queued', ts: '', meta: { queueId } }) as ChatMessage
@@ -146,6 +146,33 @@ describe('useQueuedMessageActions — cancel', () => {
     const { get } = renderActions({ rows, restoreDraft })
     act(() => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith('summarize the report', ['/tmp/report.docx'])
+  })
+
+  it('recovers the RAW text from card meta when no stash record was written', () => {
+    // The unreadable-receipt path: the client never saw a queue_id, so nothing was
+    // stashed, and the card carries the REDACTED text -- meta is the only raw source.
+    const restoreDraft = vi.fn()
+    const redacted = 'deploy with token [REDACTED: credential]'
+    const rows = [{
+      ...queued('q1', redacted),
+      meta: { queueId: 'q1', rawSend: { text: 'deploy with token hunter2', files: ['/tmp/keys.txt'], sent: redacted } },
+    } as ChatMessage]
+    const { get } = renderActions({ rows, restoreDraft })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith('deploy with token hunter2', ['/tmp/keys.txt'])
+  })
+
+  it('ignores card meta once the entry was EDITED after send', () => {
+    // Negative control: the same guard the stash uses. Restoring the pre-edit raw
+    // text here would silently discard the edit the user just made.
+    const restoreDraft = vi.fn()
+    const rows = [{
+      ...queued('q1', 'actually, roll back'),
+      meta: { queueId: 'q1', rawSend: { text: 'deploy with token hunter2', files: [], sent: 'deploy with token [REDACTED: credential]' } },
+    } as ChatMessage]
+    const { get } = renderActions({ rows, restoreDraft })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith('actually, roll back', [])
   })
 
   it('restores nothing when the host supplies no composer sink', () => {
@@ -346,5 +373,40 @@ describe('useQueuedMessageActions — callback identity', () => {
     expect(after.onInterrupt).toBe(before.onInterrupt)
     expect(after.onEdit).toBe(before.onEdit)
     expect(after.onReorder).toBe(before.onReorder)
+  })
+})
+
+
+describe('adoptPreSendStash — the wire key the server actually broadcasts', () => {
+  it('adopts on the snake_case queue_id a queue_push carries', () => {
+    preSendStash.clear()
+    queuedSendStash.clear()
+    preSendStash.set('s-1', { raw: 'typed words', files: ['/tmp/a.pdf'], sent: 'typed words' })
+    // Exactly the frame the backend broadcasts: `queue_id`, not `queueId`. Reading the camelCase
+    // form yields undefined and the helper silently adopts nothing.
+    const frame = { slot: 'chat-1', content: '[redacted]', ts: '1', queue_id: 'q-9', sendId: 's-1' }
+    adoptPreSendStash((frame as { sendId?: string }).sendId, (frame as { queue_id?: string }).queue_id)
+    expect(queuedSendStash.get('q-9')?.raw, 'the raw payload must reach the queue id').toBe('typed words')
+    expect(queuedSendStash.get('q-9')?.files).toEqual(['/tmp/a.pdf'])
+    expect(preSendStash.has('s-1'), 'the pre-send record is consumed').toBe(false)
+  })
+
+  it('does not overwrite a receipt-path record already keyed on that queue id', () => {
+    preSendStash.clear()
+    queuedSendStash.clear()
+    queuedSendStash.set('q-9', { raw: 'better copy', sent: 'better copy' })
+    preSendStash.set('s-1', { raw: 'fallback copy', sent: 'fallback copy' })
+    adoptPreSendStash('s-1', 'q-9')
+    expect(queuedSendStash.get('q-9')?.raw).toBe('better copy')
+  })
+
+  it('is inert without both identifiers', () => {
+    preSendStash.clear()
+    queuedSendStash.clear()
+    preSendStash.set('s-1', { raw: 'x', sent: 'x' })
+    adoptPreSendStash('s-1', undefined)
+    adoptPreSendStash(undefined, 'q-9')
+    expect(queuedSendStash.size).toBe(0)
+    expect(preSendStash.has('s-1')).toBe(true)
   })
 })

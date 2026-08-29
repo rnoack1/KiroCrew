@@ -31,6 +31,22 @@ export interface QueuedSendRecord {
  *  three small strings bounded by queued sends per tab session. */
 export const queuedSendStash = new Map<string, QueuedSendRecord>()
 
+/** The same records keyed by `sendId` and written BEFORE the POST, because the queue id only
+ *  arrives with the receipt. A send whose 2xx body is unreadable never learns its queue id, and
+ *  a BUSY send has no optimistic row either, so `appendQueuedMessage` finds no raw text to carry
+ *  and a later cancel would restore only the server's redacted copy, dropping the attachments. */
+export const preSendStash = new Map<string, QueuedSendRecord>()
+
+/** Move a pre-send record onto the queue id the server assigned, once `queue_push` names both. */
+export function adoptPreSendStash(sendId: string | undefined, queueId: string | undefined): void {
+  if (!sendId || !queueId) return
+  const rec = preSendStash.get(sendId)
+  if (!rec) return
+  preSendStash.delete(sendId)
+  // A receipt-path stash is written from the sending surface and is the better copy, so it wins.
+  if (!queuedSendStash.has(queueId)) queuedSendStash.set(queueId, rec)
+}
+
 /** The four queue-card callbacks `QueueStack` takes, plus the in-flight set it
  *  disables its controls from. */
 export interface QueuedMessageActions {
@@ -194,9 +210,14 @@ export function useQueuedMessageActions({
       // worse than the verbatim restore this replaced.
       const stashed = queuedSendStash.get(queueId)
       if (stashed) queuedSendStash.delete(queueId)
+      // Second source for the same fact: when the receipt was unreadable no stash
+      // was written, and the card's own text is the redacted form (#6825).
+      const carried = msg.meta?.rawSend as { text?: string; files?: string[]; sent?: string } | undefined
       const { text, files } = stashed && stashed.sent === msg.content
         ? { text: stashed.raw, files: stashed.files }
-        : restoreQueuedContent(msg.content)
+        : carried && typeof carried.text === 'string' && carried.sent === msg.content
+          ? { text: carried.text, files: carried.files || [] }
+          : restoreQueuedContent(msg.content)
       restoreDraftRef.current?.(text, files)
     }
     // Optimistically remove the card; the WS echo is a no-op if already gone.

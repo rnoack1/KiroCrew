@@ -86,18 +86,13 @@ export async function readSendReceipt(response: SendResponseLike): Promise<SendR
  *  optimistic bubble stands for?
  *
  *  Only an IMMEDIATE dispatch counts. `queued` is deliberately excluded, and not
- *  as a conservative default -- it is the wrong question. Two properties of the
- *  busy branch make a queued response unusable as a receipt for THIS bubble:
+ *  as a conservative default -- it is the wrong question. The busy branch
+ *  broadcasts `queue_push`, and that card is the server-owned representation of
+ *  the message. The optimistic bubble is then a duplicate whose fate is not the
+ *  row's: cancelling the queued message removes the card and leaves the bubble
+ *  behind.
  *
- *  - It queues only a NON-EMPTY message (`if message: slot.queue_append(...)`)
- *    yet answers `{ok: true, queued: true}` either way, so a file-only send that
- *    races into it is dropped behind a success-shaped body.
- *  - When it does queue, it broadcasts `queue_push`, and that card is the
- *    server-owned representation of the message. The optimistic bubble is then a
- *    duplicate whose fate is not the row's: cancelling the queued message removes
- *    the card and leaves the bubble behind.
- *
- *  In both shapes "confirmed" would be a lie about a message that never ran, so
+ *  So "confirmed" would be a lie about a message that never ran, so
  *  a queued acceptance leaves the bubble pending and the 30s indicator keeps its
  *  say. This costs nothing in the ordinary case: a send made while the slot is
  *  visibly busy appends no optimistic bubble at all, so there is nothing to
@@ -106,4 +101,41 @@ export async function readSendReceipt(response: SendResponseLike): Promise<SendR
  */
 export function confirmedDelivered(body: { ok?: boolean; queued?: boolean }): boolean {
   return !!body.ok && !body.queued
+}
+
+/** What a user row's delivery markers add up to, as ONE value.
+ *
+ *  `none` renders plainly; `unknown` is live doubt (this send may still duplicate
+ *  a turn if resent); `spent` is doubt a later send's confirmation demoted, kept
+ *  visible in past tense rather than erased.
+ *
+ *  The point of deriving it here is that the PRECEDENCE lives in one place. The
+ *  markers are independent booleans, so `deliveryConfirmed` alongside a stale
+ *  `deliveryUnknown`/`deliveryUnresolved` is representable — nothing clears the
+ *  demotion flags when a send confirms. Every reader resolving that on its own is
+ *  how a bubble ends up muted while the composer beside it reads "delivered".
+ *  Confirmation wins, then live doubt, then spent doubt.
+ */
+export type RowDeliveryState = 'none' | 'unknown' | 'spent'
+
+export function rowDeliveryState(meta: Record<string, unknown> | undefined): RowDeliveryState {
+  if (meta?.deliveryConfirmed === true) return 'none'
+  if (meta?.deliveryUnknown === true) return 'unknown'
+  if (meta?.deliveryUnresolved === true) return 'spent'
+  return 'none'
+}
+
+/** Does this row carry positive proof that `sendId` landed?
+ *
+ *  Separate from `rowDeliveryState`, which collapses confirmed and never-claimed to
+ *  the same `none` because a renderer treats them identically — that answer cannot
+ *  serve a caller asking about ONE send. The two spellings are the reason this is an
+ *  accessor rather than a field read: the confirming row names the send either as
+ *  `confirmedSendId`, as its own `sendId`, or — once a drain merges rows — inside `sendIds`,
+ *  where the scalar keeps only the last writer and a caller checking it under-matches.
+ */
+export function confirmsSend(meta: Record<string, unknown> | undefined, sendId: string): boolean {
+  if (meta?.deliveryConfirmed !== true || !sendId) return false
+  if (Array.isArray(meta.sendIds) && (meta.sendIds as unknown[]).includes(sendId)) return true
+  return meta.confirmedSendId === sendId || meta.sendId === sendId
 }
