@@ -462,7 +462,7 @@ describe('switchSlot.rejected — a gone target restores the pre-switch selectio
     const inflight = store.dispatch(switchSlot('gone'))
     // The authoritative list drops A while the switch is in flight (activeSlot
     // 'gone' is protected by the reconcile, A is not).
-    store.dispatch(fetchSlots.fulfilled([], 'req-evict', undefined) as never)
+    store.dispatch(fetchSlots.fulfilled([], 'req-evict', undefined, { applied: true }) as never)
     rejectGone(apiError(404, 'slot unavailable'))
     await inflight
     const s = store.getState().chat
