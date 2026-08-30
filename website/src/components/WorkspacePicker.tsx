@@ -5,6 +5,7 @@ import { api } from '../api/client'
 
 import { i18nT } from '../i18n/t'
 import { useImeGuard } from '../hooks/useImeGuard'
+import ErrorNotice from './ErrorNotice'
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -22,17 +23,22 @@ export default function WorkspacePicker({ open, onOpenChange, anchorRef, onCreat
   const [selectedDir, setSelectedDir] = useState('')
   const [wsName, setWsName] = useState('')
   const [error, setError] = useState('')
+  const [listError, setListError] = useState(false)
   const [creating, setCreating] = useState(false)
   const btnRef = anchorRef
   const dropRef = useRef<HTMLDivElement>(null)
 
+  // A superseded drill's rejection must not raise the error on the listing that replaced it.
+  const browseSeq = useRef(0)
   const browse = useCallback((path?: string) => {
+    const seq = ++browseSeq.current
+    setListError(false)
     api.browseDirs(path).then(d => {
       setBrowsePath(d.path)
       setBrowseParent(d.parent)
       setBrowseDirs(d.dirs)
       setInput(d.path)
-    }).catch(() => {})
+    }).catch(() => { if (seq === browseSeq.current) setListError(true) })
   }, [])
 
   useEffect(() => {
@@ -109,7 +115,10 @@ export default function WorkspacePicker({ open, onOpenChange, anchorRef, onCreat
                 <button onClick={() => selectDir(input.trim() || browsePath)} className="px-2 py-1 text-[11px] bg-accent/20 text-accent rounded hover:bg-accent/30 shrink-0">{i18nT('components.workspacePicker.select')}</button>
               </div>
               <div className="overflow-y-auto flex-1 min-h-0">
-                {filteredBrowse.length === 0 && <div className="px-3 py-4 text-[12px] text-muted text-center">{i18nT('components.workspacePicker.no_subdirectories')}</div>}
+                {/* No hand-off: the workspace name and path typed into this picker are
+                    unsaved, so a navigation would discard both of them. */}
+                {listError && <div className="px-3 py-4"><ErrorNotice variant="inline" message={i18nT('pages.chat.folderPanel.unable_to_list_folder')} /></div>}
+                {!listError && filteredBrowse.length === 0 && <div className="px-3 py-4 text-[12px] text-muted text-center">{i18nT('components.workspacePicker.no_subdirectories')}</div>}
                 {filteredBrowse.map(d => (
                   <button key={d.path} className="w-full text-left px-3 py-1.5 flex items-center gap-2 cursor-pointer hover:bg-bg-hover transition-colors" onClick={() => browse(d.path)}>
                     <FolderOpen size={12} className="text-accent shrink-0" />

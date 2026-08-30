@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom'
 import { FolderOpen, ChevronRight, ChevronLeft, Clock, Search } from 'lucide-react'
 import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
+import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 interface Props {
@@ -24,6 +25,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   const [recentDirs, setRecentDirs] = useState<string[]>([])
   const [recentQuery, setRecentQuery] = useState('')
   const [browseSel, setBrowseSel] = useState(0)
+  const [listError, setListError] = useState(false)
   const btnRef = anchorRef
   const dropRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -38,27 +40,23 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     return anchorRectRef.current
   }, [btnRef])
 
+  // A superseded drill's rejection must not raise the error on the listing that replaced it.
+  const browseSeq = useRef(0)
   const browse = useCallback((path?: string, preserveInput = false) => {
+    const seq = ++browseSeq.current
+    setListError(false)
     api.browseDirs(path).then(d => {
       setBrowsePath(d.path); setBrowseParent(d.parent); setBrowseDirs(d.dirs); setBrowseSel(0)
-      // Append the path delimiter after a browse/drill so the user can start
-      // typing the next segment immediately (#1196). Derive the separator from
-      // the returned path so a native Windows path (C:\Users\me) stays all-`\`
-      // instead of rendering the mixed C:\Users\me/ . A path already ending in
-      // its separator (e.g. a drive/filesystem root) is left as-is; the trailing
-      // separator is a no-op for the auto-drill effect below (which keys on `/`).
+      // A trailing separator lets the user type the next segment immediately (#1196),
+      // and `\` counts as one ONLY on a Windows-shaped path -- on POSIX it is a filename.
       if (!preserveInput) {
-        // `\` is a separator ONLY on a Windows-shaped path (drive-letter `C:...`
-        // or UNC `\\...`); on POSIX it is a legal filename character, so always
-        // append `/` there (GPT 5.6: never treat a trailing `\` as a separator on
-        // a POSIX path). A path already ending in its separator is left as-is.
         const isWin = /^[A-Za-z]:/.test(d.path) || d.path.startsWith('\\\\')
         const sep = isWin ? '\\' : '/'
         setInput(d.path.endsWith(sep) ? d.path : d.path + sep)
       }
       // Keep the combobox input focused so arrow/Enter nav continues after a drill.
       requestAnimationFrame(() => inputRef.current?.focus())
-    }).catch(() => {})
+    }).catch(() => { if (seq === browseSeq.current) setListError(true) })
   }, [])
 
   useEffect(() => {
@@ -318,7 +316,10 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
             <button disabled={!input.trim() && !browsePath} onMouseDown={e => { e.preventDefault(); select(input.trim() || browsePath) }} className="px-2 py-1 text-[11px] bg-accent/20 text-accent rounded hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed shrink-0">{i18nT('components.projectPicker.select')}</button>
           </div>
           <div id="pp-browse-list" role="listbox" aria-label={i18nT('components.projectPicker.subdirectories')} className="overflow-y-auto flex-1 min-h-0">
-            {filteredBrowse.length === 0 && <div className="px-3 py-4 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_subdirectories')}</div>}
+            {/* No hand-off: the path typed into this picker's combobox is unsaved, so a
+                navigation would discard the partial path the user is mid-way through. */}
+            {listError && <div className="px-3 py-4"><ErrorNotice variant="inline" message={i18nT('pages.chat.folderPanel.unable_to_list_folder')} /></div>}
+            {!listError && filteredBrowse.length === 0 && <div className="px-3 py-4 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_subdirectories')}</div>}
             {filteredBrowse.map((d, i) => (
               <button
                 key={d.path}
