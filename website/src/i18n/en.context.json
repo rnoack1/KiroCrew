@@ -274,6 +274,7 @@
     "pages.chatSidebar.stale_collapse_off": "Threshold preset in the sidebar's collapse-dormant-sessions picker: disables the feature entirely. 'Off' as in 'turned off', not a location.",
     "pages.chatSidebar.stale_collapse_row": "Per-folder expander row that hides OPEN sessions untouched past a threshold, in place. Must stay distinguishable from TWO neighbors in this same sidebar: 'older_sessions' (the bottom pane listing CLOSED archived sessions) and the Clean Up dialog's inactive/archive wording ('no_inactive_sessions_to_archive'). Do not reuse either register - a mechanical test pins this per locale.",
     "pages.chatSidebar.stale_collapse_menu": "Submenu row in the sidebar sort/filter menu choosing the dormancy threshold. It hides rows in place behind an expander; it archives nothing - keep it distinct from the Clean Up dialog's archive wording.",
-    "pages.chatSidebar.stale_collapse_paused": "Short status suffix on the same submenu row while the collapse is temporarily inert (list searched/filtered or non-date sort). 'Paused' as in temporarily suspended."
+    "pages.chatSidebar.stale_collapse_paused": "Short status suffix on the same submenu row while the collapse is temporarily inert (list searched/filtered or non-date sort). 'Paused' as in temporarily suspended.",
+    "components.markdownRenderer.click_to_switch_to_this_session": "Hover tooltip on a small inline chip inside chat prose; the chip shows an agent-session identifier and clicking it switches the dashboard to that already-open chat session (an in-app tab switch, not a page navigation). \"Session\" here is a chat/agent conversation in a developer tool, never a login session."
   }
 }
