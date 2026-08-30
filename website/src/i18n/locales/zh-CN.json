@@ -5201,7 +5201,10 @@
       "remove_skill": "移除技能 {{name}}",
       "skills": "技能",
       "skills_this_agent_template_loads_written_as_skil": "此代理模板加载的技能。在代理配置中写为 skill:// 资源，因此代理启动时由 kiro-cli 原生加载。未映射任何技能的代理会回退到默认行为：kirocrew 代理可看到完整技能清单，其他代理看不到任何技能。",
-      "type_to_filter": "输入以筛选…"
+      "type_to_filter": "输入以筛选…",
+      "key_changed_repick": "{{name}}: 请重新选择该技能——它已不再以该 ID 列出。列表已刷新。",
+      "copy_identifier_hint": "标识此技能的哪个已安装副本被映射",
+      "mapping_unresolved": "此副本当前未安装"
     },
     "appHost": {
       "agent_only_app": "仅代理应用",

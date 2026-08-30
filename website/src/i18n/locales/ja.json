@@ -5183,7 +5183,10 @@
       "remove_skill": "スキル {{name}} を削除",
       "skills": "スキル",
       "skills_this_agent_template_loads_written_as_skil": "このエージェントテンプレートが読み込むスキル。エージェント設定で skill:// リソースとして書かれているので、kiro-cli はエージェント開始時にそれらをネイティブに読み込みます。スキルをマップしないエージェントはデフォルトの動作にフォールバックします:kirocrew エージェントはカタログ全体を表示し、他のエージェントは表示しません。",
-      "type_to_filter": "フィルターするには入力…"
+      "type_to_filter": "フィルターするには入力…",
+      "key_changed_repick": "{{name}}: スキルをもう一度選択してください。その ID では一覧に表示されなくなりました。一覧は更新済みです。",
+      "copy_identifier_hint": "このスキルのどのインストール済みコピーが割り当てられているかを示します",
+      "mapping_unresolved": "このコピーは現在インストールされていません"
     },
     "appHost": {
       "agent_only_app": "エージェント専用アプリ",

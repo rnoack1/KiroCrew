@@ -5290,7 +5290,10 @@
       "remove_skill": "Skill {{name}} entfernen",
       "skills": "Skills",
       "skills_this_agent_template_loads_written_as_skil": "Skills, die diese Agentenvorlage lädt. In der Agenten-Konfiguration als skill://-Ressourcen hinterlegt, damit kiro-cli sie beim Start des Agenten nativ lädt. Ein Agent ohne zugeordnete Skills fällt auf das Standardverhalten zurück: der kirocrew-Agent sieht den gesamten Katalog, andere Agenten sehen keine.",
-      "type_to_filter": "Zum Filtern tippen…"
+      "type_to_filter": "Zum Filtern tippen…",
+      "key_changed_repick": "{{name}}: Wählen Sie den Skill erneut aus – er ist unter dieser ID nicht mehr aufgeführt. Die Liste wurde aktualisiert.",
+      "copy_identifier_hint": "Gibt an, welche installierte Kopie dieses Skills zugeordnet ist",
+      "mapping_unresolved": "Diese Kopie ist derzeit nicht installiert"
     },
     "appHost": {
       "agent_only_app": "Nur-Agent-App",

@@ -5379,7 +5379,10 @@
       "remove_skill": "Eliminar la habilidad {{name}}",
       "skills": "Habilidades",
       "skills_this_agent_template_loads_written_as_skil": "Habilidades que carga esta plantilla de agente. Se escriben como recursos skill:// en la configuración del agente, de modo que kiro-cli las carga de forma nativa cuando el agente arranca. Un agente sin habilidades asignadas usa el comportamiento predeterminado: el agente kirocrew ve todo el catálogo y los demás agentes no ven ninguna.",
-      "type_to_filter": "Escribe para filtrar…"
+      "type_to_filter": "Escribe para filtrar…",
+      "key_changed_repick": "{{name}}: Vuelve a seleccionar la habilidad: ya no aparece con ese id. La lista se ha actualizado.",
+      "copy_identifier_hint": "Indica qué copia instalada de esta habilidad está asignada",
+      "mapping_unresolved": "Esta copia no está instalada actualmente"
     },
     "appHost": {
       "agent_only_app": "App solo de agente",

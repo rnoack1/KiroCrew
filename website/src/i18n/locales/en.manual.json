@@ -2559,7 +2559,10 @@
       "edit_agent_config_to_change_mapping": "{{path}} — edit the agent config file to change this mapping",
       "remove": "Remove {{name}}",
       "remove_skill": "Remove skill {{name}}",
-      "skills_this_agent_template_loads_written_as_skil": "Skills this agent template loads. Written as skill:// resources in the agent config, so kiro-cli loads them natively when the agent starts. An agent with no skills mapped falls back to the default behavior: the kirocrew agent sees the whole catalog, other agents see none."
+      "skills_this_agent_template_loads_written_as_skil": "Skills this agent template loads. Written as skill:// resources in the agent config, so kiro-cli loads them natively when the agent starts. An agent with no skills mapped falls back to the default behavior: the kirocrew agent sees the whole catalog, other agents see none.",
+      "key_changed_repick": "{{name}}: Pick this skill again — it is no longer listed under that id. The list has been refreshed.",
+      "copy_identifier_hint": "Identifies which installed copy of this skill is mapped",
+      "mapping_unresolved": "This copy is not currently installed"
     },
     "artifactFolderDeleteDialog": {
       "artifact_one": "{{count}} artifact",

@@ -5183,7 +5183,10 @@
       "remove_skill": "스킬 {{name}} 제거",
       "skills": "스킬",
       "skills_this_agent_template_loads_written_as_skil": "이 에이전트 템플릿이 로드하는 스킬입니다. 에이전트 설정에 skill:// 리소스로 작성되므로 kiro-cli가 에이전트 시작 시 네이티브로 로드합니다. 매핑된 스킬이 없는 에이전트는 기본 동작으로 대체됩니다: kirocrew 에이전트는 전체 카탈로그를 보고, 다른 에이전트는 아무것도 보지 못합니다.",
-      "type_to_filter": "입력하여 필터링…"
+      "type_to_filter": "입력하여 필터링…",
+      "key_changed_repick": "{{name}}: 스킬을 다시 선택하세요. 해당 ID로는 더 이상 목록에 없습니다. 목록은 새로 고쳐졌습니다.",
+      "copy_identifier_hint": "이 스킬의 어떤 설치된 사본이 매핑되어 있는지 나타냅니다",
+      "mapping_unresolved": "이 사본은 현재 설치되어 있지 않습니다"
     },
     "appHost": {
       "agent_only_app": "에이전트 전용 앱",

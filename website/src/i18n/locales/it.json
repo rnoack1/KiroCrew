@@ -5379,7 +5379,10 @@
       "remove_skill": "Rimuovi la skill {{name}}",
       "skills": "Skill",
       "skills_this_agent_template_loads_written_as_skil": "Le skill che questo modello di agente carica. Vengono scritte come risorse skill:// nella configurazione dell’agente, così kiro-cli le carica in modo nativo all’avvio dell’agente. Un agente senza skill associate ricade sul comportamento predefinito: l’agente kirocrew vede tutto il catalogo, gli altri non vedono alcuna skill.",
-      "type_to_filter": "Digita per filtrare…"
+      "type_to_filter": "Digita per filtrare…",
+      "key_changed_repick": "{{name}}: Seleziona di nuovo la skill: non è più elencata con quell'id. L'elenco è stato aggiornato.",
+      "copy_identifier_hint": "Indica quale copia installata di questa skill è associata",
+      "mapping_unresolved": "Questa copia non è attualmente installata"
     },
     "appHost": {
       "agent_only_app": "App solo per agenti",

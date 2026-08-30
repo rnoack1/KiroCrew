@@ -5379,7 +5379,10 @@
       "remove_skill": "Retirer la compétence {{name}}",
       "skills": "Compétences",
       "skills_this_agent_template_loads_written_as_skil": "Compétences chargées par ce modèle d’agent. Écrites comme ressources skill:// dans la configuration de l’agent, afin que kiro-cli les charge nativement au démarrage de l’agent. Un agent sans compétence associée revient au comportement par défaut : l’agent kirocrew voit tout le catalogue, les autres agents n’en voient aucune.",
-      "type_to_filter": "Saisir pour filtrer…"
+      "type_to_filter": "Saisir pour filtrer…",
+      "key_changed_repick": "{{name}}: Sélectionnez à nouveau la compétence — elle n'est plus répertoriée sous cet identifiant. La liste a été actualisée.",
+      "copy_identifier_hint": "Indique quelle copie installée de cette compétence est associée",
+      "mapping_unresolved": "Cette copie n'est pas installée actuellement"
     },
     "appHost": {
       "agent_only_app": "Application pour agents uniquement",
