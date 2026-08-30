@@ -1,10 +1,12 @@
-import { useState, useEffect, useRef, useCallback, RefObject } from 'react'
+import { useState, useEffect, useRef, RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { FolderOpen, ChevronRight, ChevronLeft } from 'lucide-react'
 import { api } from '../api/client'
+import { useBrowseDirs } from './useBrowseDirs'
 
 import { i18nT } from '../i18n/t'
 import { useImeGuard } from '../hooks/useImeGuard'
+import ErrorNotice from './ErrorNotice'
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -17,6 +19,7 @@ export default function WorkspacePicker({ open, onOpenChange, anchorRef, onCreat
   const ime = useImeGuard()
   const [input, setInput] = useState('')
   const [browsePath, setBrowsePath] = useState('')
+  const [retrying, setRetrying] = useState(false)
   const [browseParent, setBrowseParent] = useState('')
   const [browseDirs, setBrowseDirs] = useState<{ name: string; path: string }[]>([])
   const [selectedDir, setSelectedDir] = useState('')
@@ -26,14 +29,17 @@ export default function WorkspacePicker({ open, onOpenChange, anchorRef, onCreat
   const btnRef = anchorRef
   const dropRef = useRef<HTMLDivElement>(null)
 
-  const browse = useCallback((path?: string) => {
-    api.browseDirs(path).then(d => {
-      setBrowsePath(d.path)
-      setBrowseParent(d.parent)
-      setBrowseDirs(d.dirs)
-      setInput(d.path)
-    }).catch(() => {})
-  }, [])
+  const { listError, browse, retry } = useBrowseDirs((
+    d: { path: string; parent: string; dirs: { name: string; path: string }[] },
+    preserveInput: boolean,
+  ) => {
+    setBrowsePath(d.path)
+    setBrowseParent(d.parent)
+    setBrowseDirs(d.dirs)
+    // Honour the flag rather than always overwriting: a retry of the path already shown
+    // must not replace what the user has typed since.
+    if (!preserveInput) setInput(d.path)
+  })
 
   useEffect(() => {
     if (!open) return
@@ -84,7 +90,10 @@ export default function WorkspacePicker({ open, onOpenChange, anchorRef, onCreat
   if (!open || !btnRef.current) return null
 
   const q = input.toLowerCase()
-  const filteredBrowse = q && q !== browsePath.toLowerCase() ? browseDirs.filter(d => d.name.toLowerCase().includes(q.split('/').pop() || '') || d.path.toLowerCase().includes(q)) : browseDirs
+  // Emptied while the listing failed, matching the sibling pickers and panel: these rows
+  // describe the directory we drilled out of, not the one the notice is about.
+  const visibleDirs = listError ? [] : browseDirs
+  const filteredBrowse = q && q !== browsePath.toLowerCase() ? visibleDirs.filter(d => d.name.toLowerCase().includes(q.split('/').pop() || '') || d.path.toLowerCase().includes(q)) : visibleDirs
 
   return createPortal(
         <div ref={dropRef} className="fixed z-[9999] bg-card border border-border rounded-lg shadow-lg w-[400px] max-h-[460px] flex flex-col overflow-hidden animate-slide-up" style={(() => { const r = btnRef.current!.getBoundingClientRect(); const maxH = window.innerHeight - r.bottom - 8; return { top: r.bottom + 4, left: Math.max(8, r.right - 400), maxHeight: Math.max(200, maxH) } })()}>
@@ -109,7 +118,27 @@ export default function WorkspacePicker({ open, onOpenChange, anchorRef, onCreat
                 <button onClick={() => selectDir(input.trim() || browsePath)} className="px-2 py-1 text-[11px] bg-accent/20 text-accent rounded hover:bg-accent/30 shrink-0">{i18nT('components.workspacePicker.select')}</button>
               </div>
               <div className="overflow-y-auto flex-1 min-h-0">
-                {filteredBrowse.length === 0 && <div className="px-3 py-4 text-[12px] text-muted text-center">{i18nT('components.workspacePicker.no_subdirectories')}</div>}
+                {/* No hand-off: the workspace name and path typed into this picker are
+                    unsaved, so a navigation would discard both of them. */}
+                {listError && (
+                  <div className="px-3 py-4 flex items-center gap-2">
+                    <ErrorNotice variant="inline" message={i18nT(listError === 'timeout'
+                      ? 'pages.chat.folderPanel.listing_timed_out'
+                      : 'pages.chat.folderPanel.unable_to_list_folder')} />
+<button
+  type="button"
+  onClick={() => { setRetrying(true); void retry().finally(() => setRetrying(false)) }}
+  disabled={retrying}
+  aria-busy={retrying}
+  aria-label={`${i18nT('components.workspacePicker.retry')}: `
+    + i18nT(listError === 'timeout'
+      ? 'pages.chat.folderPanel.listing_timed_out'
+      : 'pages.chat.folderPanel.unable_to_list_folder')}
+  className="shrink-0 text-[11px] px-1.5 py-0.5 rounded border border-border text-muted hover:text-text hover:bg-bg-hover disabled:opacity-50 disabled:cursor-default disabled:hover:text-muted"
+>{i18nT('components.workspacePicker.retry')}</button>
+                  </div>
+                )}
+                {!listError && filteredBrowse.length === 0 && <div className="px-3 py-4 text-[12px] text-muted text-center">{i18nT('components.workspacePicker.no_subdirectories')}</div>}
                 {filteredBrowse.map(d => (
                   <button key={d.path} className="w-full text-left px-3 py-1.5 flex items-center gap-2 cursor-pointer hover:bg-bg-hover transition-colors" onClick={() => browse(d.path)}>
                     <FolderOpen size={12} className="text-accent shrink-0" />

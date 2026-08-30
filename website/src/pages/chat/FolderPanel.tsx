@@ -8,13 +8,25 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useBranding } from '../../hooks/useBranding'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { api } from '../../api/client'
+import { isDeadlineError } from '../../api/queryClient'
 import { fileIcon, colorForExt } from '../../utils/fileIcons'
+import { findReport } from '../../utils/errorReport'
+import { errMessage } from '../../utils/thunkError'
+import { searchErrorCause, type SearchErrorCause } from '../../lib/searchErrorCause'
 import { PierreWorkspaceTree } from '../../pierre/tree'
 import { useTreeState } from './FileBrowserRail'
 
 /** Last path segment, trailing slashes ignored. */
 function basename(p: string): string {
   return p.replace(/\/+$/, '').split('/').pop() || p
+}
+
+/** This surface's copy for each cause the shared classifier can report. */
+const SEARCH_FAILURE_KEYS: Record<SearchErrorCause, string> = {
+  timed_out: 'pages.chat.folderPanel.search_timed_out',
+  failed: 'pages.chat.folderPanel.search_failed',
+  denied: 'pages.chat.folderPanel.search_denied',
+  root_missing: 'pages.chat.folderPanel.search_root_missing',
 }
 
 /**
@@ -174,9 +186,11 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
     return () => clearTimeout(id)
   }, [query])
 
-  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
+  const { data, isLoading, isError, error: listErr, refetch, isFetching } = useQuery({
     queryKey: ['browse-files', cwd],
-    queryFn: () => api.browseFiles(cwd),
+    queryFn: ({ signal }) => api.browseFiles(cwd, signal),
+    // Kept: each outer attempt re-enters `withDeadline` for a fresh 10s, so one
+    // retry would spend a second full bound past the first.
     retry: false,
     staleTime: 5_000,
   })
@@ -196,6 +210,8 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
     queryKey: ['folder-file-search', cwd, debouncedQuery, searchLimit],
     queryFn: ({ signal }) => api.fileSearch(debouncedQuery, cwd, signal, 'files', searchLimit),
     enabled: searching,
+    // Kept, unlike the picker's query on this endpoint: this panel prefers a single
+    // bounded attempt, so it forgoes the shared policy's retry rungs entirely.
     retry: false,
     staleTime: 5_000,
     // Keep the current rows on screen while a wider (or new) page is fetched:
@@ -218,7 +234,12 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   const qc = useQueryClient()
   const [refreshingTree, setRefreshingTree] = useState(false)
   const refresh = async () => {
-    if (!treeMode) { await refetch(); return }
+    if (!treeMode) {
+      // Refresh is the obvious retry beside a failed search, so it has to refetch the
+      // search as well as the listing behind it. A prefix key matches the active one.
+      await Promise.all([refetch(), qc.refetchQueries({ queryKey: ['folder-file-search', cwd] })])
+      return
+    }
     setRefreshingTree(true)
     try {
       await Promise.all([
@@ -241,7 +262,10 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   // Defensive `kind` filter: the server already honours `kinds=files`, but a
   // gateway older than that parameter ignores it and would fold directories into
   // a list whose header promises files.
-  const matches = (searchData?.results ?? []).filter(r => r.kind !== 'dir')
+
+  // Emptied on error: a query that failed on refetch keeps its last rows, which would
+  // otherwise sit beneath a notice saying the search never landed.
+  const matches = (isSearchError ? [] : (searchData?.results ?? [])).filter(r => r.kind !== 'dir')
   const searchRoot = searchData?.root || cwd
   // While a wider page is in flight, `matches` are placeholder rows from the
   // PREVIOUS tier. `expanding` names that window so the control stays mounted
@@ -375,14 +399,19 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
               // Read failure; the only editable field is the transient search
               // box, not a durable draft → hand-off on.
               <div className="px-2 py-2">
-                <ErrorNotice variant="inline" message={(searchError as Error)?.message || t('pages.chat.folderPanel.search_failed')} askAgent />
+                <ErrorNotice
+                  variant="inline"
+                  message={t(SEARCH_FAILURE_KEYS[searchErrorCause(searchError)])}
+                  report={findReport(errMessage(searchError))}
+                  askAgent
+                />
               </div>
             )}
             {!isSearchError && isSearching && matches.length === 0 && (
-              <div className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.searching')}</div>
+              <div role="status" className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.searching')}</div>
             )}
             {!isSearchError && !isSearching && matches.length === 0 && (
-              <div className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.no_files_match')}</div>
+              <div role="status" className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.no_files_match')}</div>
             )}
             {matches.map(m => {
               const Icon = fileIcon(m.path)
@@ -446,7 +475,14 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
             {isError && (
               // List failure in a side panel with nothing unsaved → hand-off on.
               <div className="px-2 py-2">
-                <ErrorNotice variant="inline" message={(error as Error)?.message || t('pages.chat.folderPanel.unable_to_list_folder')} askAgent />
+                <ErrorNotice
+                  variant="inline"
+                  message={t(isDeadlineError(listErr)
+                    ? 'pages.chat.folderPanel.listing_timed_out'
+                    : 'pages.chat.folderPanel.unable_to_list_folder')}
+                  report={findReport(errMessage(listErr))}
+                  askAgent
+                />
               </div>
             )}
             {!isLoading && !isError && isEmpty && (

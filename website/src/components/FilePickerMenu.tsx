@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { FileText, Folder, Eye } from 'lucide-react'
 import { api } from '../api/client'
 import ErrorNotice from './ErrorNotice'
+import { searchErrorCause, type SearchErrorCause } from '../lib/searchErrorCause'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 import type { SendMode } from '../pages/chat/ChatSettings'
@@ -44,6 +45,33 @@ interface Props {
 }
 
 const formatSize = (bytes: number): string => fmtBytes(bytes)
+
+/**
+ * The failure copy, by cause and by which Enter hint applies.
+ *
+ * Spelled as whole keys rather than assembled from fragments: the catalog tooling
+ * greps these literals, so a composed key reads as a dead entry and as an
+ * untranslated string at the call site.
+ */
+const SEARCH_ERROR_KEYS = {
+  timed_out: {
+    ctrl: 'components.filePickerMenu.search_timed_out_ctrl_enter_sends',
+    enter: 'components.filePickerMenu.search_timed_out_enter_sends',
+  },
+  failed: {
+    ctrl: 'components.filePickerMenu.search_failed_ctrl_enter_sends',
+    enter: 'components.filePickerMenu.search_failed_enter_sends',
+  },
+  denied: {
+    ctrl: 'components.filePickerMenu.search_denied_ctrl_enter_sends',
+    enter: 'components.filePickerMenu.search_denied_enter_sends',
+  },
+  root_missing: {
+    ctrl: 'components.filePickerMenu.search_root_missing_ctrl_enter_sends',
+    enter: 'components.filePickerMenu.search_root_missing_enter_sends',
+  },
+} as const satisfies Record<SearchErrorCause, { ctrl: string; enter: string }>
+
 
 function formatAge(mtime: number): string {
   const diff = Date.now() / 1000 - mtime
@@ -107,10 +135,12 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // which already use useQuery). `enabled` gates on 2+ chars; the queryFn `signal`
   // aborts stale requests; `placeholderData` keeps the prior results on screen
   // while the next query resolves so the list doesn't flicker to empty.
-  const { data, isFetching, isError } = useQuery<FileSearchResponse>({
+  const { data, isFetching, isError, error } = useQuery<FileSearchResponse>({
     queryKey: ['file-search', debounced, project],
     queryFn: ({ signal }) => api.fileSearch(debounced, project, signal),
     enabled: open && debounced.length >= 2,
+    // No `retry` override: the shared `retryPolicy` refuses to retry a deadline we
+    // set ourselves, so the bound holds without one.
     placeholderData: prev => prev,
     staleTime: 10_000,
   })
@@ -120,11 +150,13 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // `query` length (not the debounced one) so results clear immediately when the
   // user drops below 2 chars; `data` is keyed on `debounced`, so it lags by up to
   // one debounce tick — the intended debounce behavior.
+  // Gated on `isError` HERE, not at the render: keyboard nav counts this list too,
+  // so a row merely hidden stays selectable via Arrow+Enter.
   const { ordered: results, initialIndex } = useMemo(() => {
-    const raw = (open && query.length >= 2 ? data?.results : []) || []
+    const raw = (open && !isError && query.length >= 2 ? data?.results : []) || []
     const above = anchorRef.current ? menuGeometry(anchorRef.current, raw.length, 48).above : false
     return bottomUpOrder(raw, above)
-  }, [data, open, query, anchorRef])
+  }, [data, isError, open, query, anchorRef])
 
   // Open the highlighted file in the viewer (the eye/preview action) instead of
   // inserting an @-mention. Shared by the Cmd/Ctrl+Enter path (via onChoose's
@@ -199,6 +231,11 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // held or releasing — would be false there.
   const ctrl = sendOnEnter === 'ctrl-enter'
 
+  // A failed search is not an empty one, and each arm names its own cause so a refusal
+  // does not read as transient and invite a pointless retry.
+  const failedCopy = SEARCH_ERROR_KEYS[searchErrorCause(error)]
+  const failedKey = ctrl ? failedCopy.ctrl : failedCopy.enter
+
   // Enter AND Tab are swallowed while the gate is closed, so Send is not
   // keyboard-reachable — the copy names Escape, whose branch runs before them.
   const emptyKey = query.length < 2
@@ -217,15 +254,27 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     ? 'components.filePickerMenu.no_matches_ctrl_enter_sends'
     : 'components.filePickerMenu.no_matches_enter_sends'
 
+  // A SETTLED failure, so the notice never flashes mid-debounce: the ordinary
+  // "no matches" copy would claim the search ran and found nothing.
+  const searchFailed = isError && query.length >= 2 && debounced === query && !isFetching
+
   // One region for every empty state, so a transition is a text change inside a
   // live region rather than a mount — what screen readers announce least well.
-  const empty = <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(emptyKey)}</div>
-
-  // A SETTLED search failure gets its own surface: the ordinary "no matches"
-  // copy would claim the search ran and found nothing, when it did not run at
-  // all. Rendered above whatever (stale, placeholder) results are still on
-  // screen so the keyboard gate above keeps working unchanged.
-  const searchFailed = isError && query.length >= 2 && debounced === query && !isFetching
+  // A failure leaves that region: an empty result is not an error.
+  const empty = searchFailed
+    ? (
+      <div className="px-3 py-3">
+        {/* No hand-off: the composer's unsent message lives in this tree, so a
+            navigation would discard the draft this picker was opened to complete. */}
+        <ErrorNotice
+          variant="inline"
+          className="whitespace-normal"
+          message={i18nT(failedKey)}
+          testId="file-picker-search-error"
+        />
+      </div>
+    )
+    : <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(emptyKey)}</div>
 
   return createPortal(
     <div
@@ -233,20 +282,7 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
       role="listbox"
       style={{ ...(above ? { bottom } : { top }), left, width: Math.min(width, 420), maxHeight }}
     >
-      {searchFailed && (
-        <div className="px-3 py-2">
-          {/* No hand-off: the composer draft this picker is completing an
-              @-mention inside is unsaved — the hand-off would navigate away
-              from it. */}
-          <ErrorNotice
-            variant="inline"
-            className="whitespace-normal"
-            message={i18nT('components.filePickerMenu.search_failed')}
-            testId="file-picker-search-error"
-          />
-        </div>
-      )}
-      {results.length === 0 ? (searchFailed ? null : empty) : results.map((f, i) => {
+      {searchFailed || results.length === 0 ? empty : results.map((f, i) => {
         const kind = resultKind(f)
         const isDir = kind === 'dir'
         return (

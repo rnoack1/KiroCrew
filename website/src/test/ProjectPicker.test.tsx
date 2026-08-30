@@ -231,6 +231,153 @@ describe('ProjectPicker', () => {
       expect(await screen.findByText('No recent projects')).toBeInTheDocument()
     })
 
+    it('ignores a superseded browse rejection that lands after a newer success', async () => {
+      // Without the generation guard the first drill's late rejection set listError
+      // after the second drill had already rendered valid rows.
+      let rejectFirst: (e: Error) => void = () => {}
+      vi.mocked(api.recentProjects).mockResolvedValue({ dirs: [] })
+      vi.mocked(api.browseDirs)
+        .mockImplementationOnce(() => new Promise((_res, rej) => { rejectFirst = rej }))
+        .mockResolvedValue(mockBrowseDirs('/home/u', [{ name: 'beta', path: '/home/u/beta' }]))
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />
+      )
+      const input = await screen.findByLabelText('Project directory path')
+      fireEvent.change(input, { target: { value: '/home/u/' } })
+      expect(await screen.findByText('beta')).toBeInTheDocument()
+      await act(async () => { rejectFirst(new Error('stale')) })
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(screen.getByText('beta')).toBeInTheDocument()
+    })
+
+    it('keeps the previous listing while a drill is pending, not an emptiness claim', async () => {
+      // "No subdirectories" asserts a folder IS empty, so a listing still in flight must
+      // not render it -- on a wedged gateway that claim would hold for the whole deadline.
+      vi.mocked(api.recentProjects).mockResolvedValue({ dirs: [] })
+      vi.mocked(api.browseDirs)
+        .mockResolvedValueOnce(mockBrowseDirs('/home/u', [{ name: 'beta', path: '/home/u/beta' }]))
+        .mockImplementationOnce(() => new Promise(() => {}))
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />
+      )
+      const input = await screen.findByLabelText('Project directory path')
+      expect(await screen.findByText('beta')).toBeInTheDocument()
+      fireEvent.keyDown(input, { key: 'ArrowDown' })
+      fireEvent.keyDown(input, { key: 'Enter' })
+      await waitFor(() => expect(api.browseDirs).toHaveBeenCalledTimes(2))
+      expect(screen.queryByText('No subdirectories')).toBeNull()
+      expect(screen.getByText('beta')).toBeInTheDocument()
+    })
+
+    it('names a browse timeout apart from a browse failure', async () => {
+      // A wedged gateway and a refusal are different remedies, so the picker must not
+      // render one copy for both -- the folder panel's search already distinguishes them.
+      vi.mocked(api.recentProjects).mockResolvedValue({ dirs: [] })
+      vi.mocked(api.browseDirs).mockRejectedValue(
+        Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }),
+      )
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />
+      )
+      expect(await screen.findByRole('alert')).toHaveTextContent(/Folder listing timed out/)
+      expect(screen.queryByText(/Unable to list folder/)).toBeNull()
+    })
+
+    it('surfaces a recent-projects failure instead of silently landing on Browse', async () => {
+      // Flipping to Browse is the fallback, but on its own it reads as "you have no recent
+      // projects" -- a claim about the user's data, not about a request that never answered.
+      vi.mocked(api.recentProjects).mockRejectedValue(
+        Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }),
+      )
+      vi.mocked(api.browseDirs).mockResolvedValue(mockBrowseDirs('/home/u', []))
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />
+      )
+      expect(await screen.findByText('Recent projects unavailable')).toBeInTheDocument()
+      // And says it ONCE. The list is empty because the request failed, not because the
+      // account has no projects, so the empty-state copy would contradict the notice.
+      const recentTab = await screen.findByText('Recent')
+      fireEvent.mouseDown(recentTab)
+      expect(screen.queryByText('No recent projects')).not.toBeInTheDocument()
+    })
+
+    it('clears the previous directory\u2019s rows when a drill fails, not leaving them under the notice', async () => {
+      // The rows in state describe the directory we drilled OUT of, so leaving them
+      // beneath "listing timed out" reads as the new folder's contents.
+      vi.mocked(api.recentProjects).mockResolvedValue({ dirs: [] })
+      vi.mocked(api.browseDirs)
+        .mockResolvedValueOnce(mockBrowseDirs('/home/u', [{ name: 'child', path: '/home/u/child' }]))
+        .mockRejectedValue(Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }))
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />
+      )
+      fireEvent.click(await screen.findByText('child'))                    // drill in; this one fails
+      expect(await screen.findByText('Folder listing timed out')).toBeInTheDocument()
+      expect(screen.queryByText('child')).not.toBeInTheDocument()
+    })
+
+    it('clears a stale recent-projects error on reopen, not only when the next fetch lands', async () => {
+      // This picker lives on an always-mounted page, so without a synchronous reset the
+      // previous failure is still on screen while the new request is in flight.
+      vi.mocked(api.recentProjects)
+        .mockRejectedValueOnce(new Error('nope'))
+        .mockImplementation(() => new Promise(() => {}))     // reopen: never settles
+      vi.mocked(api.browseDirs).mockResolvedValue(mockBrowseDirs('/home/u', []))
+      const { rerender } = renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />
+      )
+      expect(await screen.findByText('Recent projects unavailable')).toBeInTheDocument()
+
+      rerender(<ProjectPicker open={false} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />)
+      rerender(<ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />)
+      await waitFor(() =>
+        expect(screen.queryByText('Recent projects unavailable')).not.toBeInTheDocument())
+    })
+
+    it('recovers both failed reads by reopening, and offers a retry beside each notice', async () => {
+      // Reopening is still a recovery path, so if the open effect stopped re-reading these
+      // failure states would regress; the Retry controls make one of them discoverable.
+      vi.mocked(api.recentProjects).mockRejectedValue(new Error('nope'))
+      vi.mocked(api.browseDirs).mockRejectedValue(new Error('nope'))
+      const { rerender } = renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />
+      )
+      expect(await screen.findByText('Recent projects unavailable')).toBeInTheDocument()
+      await screen.findByText('Unable to list folder')
+      expect(screen.getAllByRole('button', { name: /^Retry: / })).toHaveLength(2)
+
+      const recentBefore = vi.mocked(api.recentProjects).mock.calls.length
+      const browseBefore = vi.mocked(api.browseDirs).mock.calls.length
+      vi.mocked(api.recentProjects).mockResolvedValue({ dirs: ['/home/u/projA'] })
+      vi.mocked(api.browseDirs).mockResolvedValue(mockBrowseDirs('/home/u', [
+        { name: 'beta', path: '/home/u/beta' },
+      ]))
+      rerender(
+        <ProjectPicker open={false} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />
+      )
+      rerender(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />
+      )
+      await waitFor(() =>
+        expect(vi.mocked(api.recentProjects).mock.calls.length).toBeGreaterThan(recentBefore))
+      await waitFor(() =>
+        expect(vi.mocked(api.browseDirs).mock.calls.length).toBeGreaterThan(browseBefore))
+      await waitFor(() =>
+        expect(screen.queryByText('Recent projects unavailable')).not.toBeInTheDocument())
+    })
+
+    it('surfaces a browse failure instead of showing it as an empty directory', async () => {
+      // The listing is deadline-bound, so a wedged gateway rejects rather than hanging.
+      // "No subdirectories" would report a folder as empty on a listing that never arrived.
+      vi.mocked(api.recentProjects).mockResolvedValue({ dirs: [] })
+      vi.mocked(api.browseDirs).mockRejectedValue(new Error('nope'))
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />
+      )
+      expect(await screen.findByRole('alert')).toHaveTextContent(/Unable to list folder/)
+      expect(screen.queryByText('No subdirectories')).toBeNull()
+    })
+
     it('switches to Browse tab when no recent projects exist', async () => {
       vi.mocked(api.recentProjects).mockResolvedValue({ dirs: [] })
       vi.mocked(api.browseDirs).mockResolvedValue(mockBrowseDirs('/home/u', [
@@ -471,6 +618,206 @@ describe('ProjectPicker', () => {
       fireEvent.change(input, { target: { value: '/home/u/' } })
       await act(async () => { await vi.advanceTimersByTimeAsync(300) })
       expect(browseSpy).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('a background refetch does not rewrite what the user typed', () => {
+    /**
+     * The shipped client leaves `refetchOnWindowFocus` true so that a finite `staleTime`
+     * opts a query INTO focus refetching, and this hook wants `staleTime: 0` because the
+     * filesystem moves under it. Those two together used to mean an alt-tab re-read the
+     * listing and fed it back through `onData`, which calls `setInput`. The test client
+     * shares both properties, so it can see the same thing.
+     */
+    it('keeps a typed path across a window focus whose listing changed on disk', async () => {
+      vi.spyOn(api, 'browseDirs').mockResolvedValue(
+        mockBrowseDirs('/home/u', [{ name: 'alpha', path: '/home/u/alpha' }]),
+      )
+      renderWithProviders(
+        <ProjectPicker open onOpenChange={() => {}} anchorRect={rect(10, 10)} onSelect={() => {}} />,
+      )
+      fireEvent.mouseDown(screen.getByText('Browse'))
+      const box = await screen.findByPlaceholderText('/path/to/project')
+      await waitFor(() => expect(api.browseDirs).toHaveBeenCalled())
+
+      fireEvent.change(box, { target: { value: '/home/u/my-half-typed-pa' } })
+      expect((box as HTMLInputElement).value).toBe('/home/u/my-half-typed-pa')
+
+      // The directory changes on disk, so a refetch would yield a NEW data reference and
+      // structural sharing cannot hand back the old one.
+      vi.mocked(api.browseDirs).mockResolvedValue(
+        mockBrowseDirs('/home/u', [
+          { name: 'alpha', path: '/home/u/alpha' },
+          { name: 'beta', path: '/home/u/beta' },
+        ]),
+      )
+      // focusManager binds `visibilitychange` on WINDOW, and `waitFor` on an UNCHANGED
+      // value returns on its first check -- so target and settle both decide discrimination.
+      await act(async () => {
+        window.dispatchEvent(new Event('visibilitychange'))
+        await new Promise(r => setTimeout(r, 80))
+      })
+
+      expect((box as HTMLInputElement).value).toBe('/home/u/my-half-typed-pa')
+    })
+
+    it('reads nothing more once closed', async () => {
+      const { rerender } = renderWithProviders(
+        <ProjectPicker open onOpenChange={() => {}} anchorRect={rect(10, 10)} onSelect={() => {}} />,
+      )
+      await waitFor(() => expect(api.browseDirs).toHaveBeenCalled())
+
+      rerender(
+        <ProjectPicker open={false} onOpenChange={() => {}} anchorRect={rect(10, 10)} onSelect={() => {}} />,
+      )
+      const after = vi.mocked(api.browseDirs).mock.calls.length
+      // A settle window: an assertion that something did NOT happen returns on its first check
+      // otherwise, which would pass against a picker that reads on every render.
+      await new Promise(r => setTimeout(r, 50))
+      expect(vi.mocked(api.browseDirs).mock.calls.length).toBe(after)
+    })
+
+    it('offers a retry on the recents notice that re-runs the read', async () => {
+      vi.spyOn(api, 'recentProjects').mockRejectedValue(new Error('deadline exceeded'))
+      renderWithProviders(
+        <ProjectPicker open onOpenChange={() => {}} anchorRect={rect(10, 10)} onSelect={() => {}} />,
+      )
+      await screen.findByText('Recent projects unavailable')
+      const before = vi.mocked(api.recentProjects).mock.calls.length
+
+      vi.mocked(api.recentProjects).mockResolvedValue({ dirs: ['/home/u/projA'] })
+      fireEvent.click(screen.getByRole('button', { name: 'Retry: Recent projects unavailable' }))
+
+      await waitFor(() => {
+        expect(vi.mocked(api.recentProjects).mock.calls.length).toBeGreaterThan(before)
+      })
+    })
+  })
+
+  describe('a reopened drill re-reads the directory instead of serving cached rows', () => {
+    /**
+     * Reopening after a subdir drill changes the query key back to the root, which react-query
+     * serves from cache before its refetch starts. A guard that spent the drill on that cached
+     * value suppressed the refetch that followed, so a directory changed on disk kept offering
+     * rows that no longer existed.
+     */
+    it('shows rows created since the last visit when the picker is reopened', async () => {
+      vi.mocked(api.browseDirs).mockImplementation(async (path?: string) =>
+        path === '/home/u/alpha'
+          ? mockBrowseDirs('/home/u/alpha', [])
+          : mockBrowseDirs('/home/u', [{ name: 'alpha', path: '/home/u/alpha' }]))
+
+      const { rerender } = renderWithProviders(
+        <ProjectPicker open onOpenChange={() => {}} anchorRect={rect(10, 10)} onSelect={() => {}} />,
+      )
+      fireEvent.mouseDown(screen.getByText('Browse'))
+      const alpha = await screen.findByText('alpha')
+      fireEvent.click(alpha)
+      await waitFor(() => expect(api.browseDirs).toHaveBeenCalledWith('/home/u/alpha'))
+
+      rerender(
+        <ProjectPicker open={false} onOpenChange={() => {}} anchorRect={rect(10, 10)} onSelect={() => {}} />,
+      )
+      // The root gains a directory while the picker is shut.
+      vi.mocked(api.browseDirs).mockImplementation(async () =>
+        mockBrowseDirs('/home/u', [
+          { name: 'alpha', path: '/home/u/alpha' },
+          { name: 'brand-new', path: '/home/u/brand-new' },
+        ]))
+      rerender(
+        <ProjectPicker open onOpenChange={() => {}} anchorRect={rect(10, 10)} onSelect={() => {}} />,
+      )
+      fireEvent.mouseDown(screen.getByText('Browse'))
+
+      expect(await screen.findByText('brand-new')).toBeInTheDocument()
+    })
+
+    it('retries the failed read on the first click, with nothing yet succeeded', async () => {
+      // The old call passed the last SUCCESSFUL path, which is '' before anything succeeds --
+      // and '' and undefined share one query key, so the click fetched nothing at all.
+      vi.mocked(api.browseDirs).mockRejectedValue(new Error('nope'))
+      renderWithProviders(
+        <ProjectPicker open onOpenChange={() => {}} anchorRect={rect(10, 10)} onSelect={() => {}} />,
+      )
+      fireEvent.mouseDown(screen.getByText('Browse'))
+      await screen.findByText('Unable to list folder')
+      const before = vi.mocked(api.browseDirs).mock.calls.length
+
+      vi.mocked(api.browseDirs).mockResolvedValue(
+        mockBrowseDirs('/home/u', [{ name: 'recovered', path: '/home/u/recovered' }]),
+      )
+      const listingRetry = screen.getAllByRole('button', { name: /^Retry: / })
+      fireEvent.click(listingRetry[listingRetry.length - 1])
+
+      await waitFor(() =>
+        expect(vi.mocked(api.browseDirs).mock.calls.length).toBeGreaterThan(before))
+      expect(await screen.findByText('recovered')).toBeInTheDocument()
+    })
+
+    it('reports the Retry control busy while its re-read is outstanding', async () => {
+      // First read fails so the notice appears; the second is held open -- without an
+      // acknowledgement that window is pixel-identical to the state before the click.
+      let release: (v: { dirs: string[] }) => void = () => {}
+      const held = new Promise<{ dirs: string[] }>(r => { release = r })
+      let calls = 0
+      vi.mocked(api.recentProjects).mockImplementation(() => {
+        calls += 1
+        return calls === 1 ? Promise.reject(new Error('nope')) : held
+      })
+      vi.mocked(api.browseDirs).mockRejectedValue(new Error('nope'))
+      renderWithProviders(
+        <ProjectPicker open onOpenChange={() => {}} anchorRect={rect(10, 10)} onSelect={() => {}} />,
+      )
+      await screen.findByText('Recent projects unavailable')
+      const btn = screen.getByRole('button', { name: 'Retry: Recent projects unavailable' })
+      expect(btn).not.toBeDisabled()
+
+      fireEvent.click(btn)
+      await waitFor(() => expect(btn).toBeDisabled())
+      expect(btn).toHaveAttribute('aria-busy', 'true')
+
+      // On success the notice is gone, so the button goes with it -- asserting "not disabled"
+      // would probe a detached node, which keeps its last rendered attributes forever.
+      await act(async () => { release({ dirs: ['/home/u/projA'] }); await Promise.resolve() })
+      await waitFor(() =>
+        expect(screen.queryByText('Recent projects unavailable')).not.toBeInTheDocument())
+    })
+
+    it('gives the two Retry controls distinct accessible names', async () => {
+      // Both buttons show the word "Retry", so a screen reader hears it twice and the
+      // adjacency that says which is which is purely visual.
+      vi.mocked(api.recentProjects).mockRejectedValue(new Error('nope'))
+      vi.mocked(api.browseDirs).mockRejectedValue(new Error('nope'))
+      renderWithProviders(
+        <ProjectPicker open onOpenChange={() => {}} anchorRect={rect(10, 10)} onSelect={() => {}} />,
+      )
+      await screen.findByText('Recent projects unavailable')
+      await screen.findByText('Unable to list folder')
+
+      expect(screen.getByRole('button', { name: 'Retry: Recent projects unavailable' }))
+        .toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Retry: Unable to list folder' }))
+        .toBeInTheDocument()
+      expect(screen.queryAllByRole('button', { name: 'Retry' })).toHaveLength(0)
+    })
+
+    it('gives every Retry a hover affordance that names a defined colour', async () => {
+      // `fg` is not a colour and the colour named `bg-hover` needs the `bg-` utility prefix, so
+      // `hover:text-fg` / `hover:bg-hover` compile to nothing and the button never reacts.
+      vi.mocked(api.recentProjects).mockRejectedValue(new Error('nope'))
+      vi.mocked(api.browseDirs).mockRejectedValue(new Error('nope'))
+      renderWithProviders(
+        <ProjectPicker open onOpenChange={() => {}} anchorRect={rect(10, 10)} onSelect={() => {}} />,
+      )
+      await screen.findByText('Recent projects unavailable')
+      const buttons = screen.getAllByRole('button', { name: /^Retry: / })
+      expect(buttons.length).toBeGreaterThan(0)
+      for (const b of buttons) {
+        expect(b.className).toContain('hover:text-text')
+        expect(b.className).toContain('hover:bg-bg-hover')
+        expect(b.className).not.toContain('hover:text-fg')
+        expect(b.className).not.toMatch(/hover:bg-hover(\s|$)/)
+      }
     })
   })
 })

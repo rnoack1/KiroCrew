@@ -29,6 +29,14 @@ let sessionChangedMode = false
  *
  * `ready` covers the in-flight case on purpose: the tree renders its own loading
  * state, so the rail should mount rather than flashing an error first.
+ *
+ * `error` is deliberately ONE state and not keyed by cause, which is the boundary of
+ * the per-endpoint deadline's copy rule: `api.projectTree` is bounded, but neither this
+ * rail nor the Pierre tree renders a failure MESSAGE at all -- they render an icon and
+ * a state, so there is no server text to leak and nothing for a timeout string to
+ * replace. Splitting a `timeout` arm in here therefore needs new copy in every locale
+ * before it buys anything; until a surface actually shows the words, the bound is doing
+ * its whole job by making the read settle.
  */
 export type TreeState = 'no-dir' | 'error' | 'ready'
 
