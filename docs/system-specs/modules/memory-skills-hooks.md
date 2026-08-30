@@ -916,6 +916,70 @@ help a user enable and interpret it. It does not enable the feature or trigger
 generation, and holds no runtime-written frontmatter, since a builtin skill is
 re-synced by `rmtree` + `copytree` on upgrade.
 
+**`GET /api/skills` coalesces concurrent readers onto one scan, and stores nothing.**
+The catalog assembly is filesystem-heavy (`os.walk` plus per-file frontmatter reads, package
+path globs, per-skill resolve/read, agent annotation), and the defect this addresses is that
+N simultaneous skill-menu opens each paid for their own scan. `_assemble_skills_catalog` in
+`dashboard/handlers/prompts.py` fixes that with single-flight coalescing: the first reader
+assembles, readers queued alongside it take those rows instead of scanning again. Measured
+against a counting assembler, 8-way concurrency goes from 0% to 87.5% redundant-scan
+elimination — eight opens cost one scan.
+
+**There is no stored result and no TTL, and that is what makes the invariant cheap.** The
+leader's rows are offered only while another reader for the same key is still inside
+`_assemble_skills_catalog`; when the last one leaves, they are dropped. So a read that is not
+part of a concurrent burst always scans current on-disk state, the base's recorded default
+("No result cache: the endpoint always reflects current on-disk state, so freshly
+created/installed skills appear immediately") is preserved, and **no mutation path anywhere
+owes the catalog an invalidation**.
+
+That last point is the design's main property, and it was arrived at by subtraction, in three
+steps that are recorded because each one removed a mechanism a reader may still expect:
+
+1. An earlier revision kept a 3s stored entry. It contributed none of the measured win — the
+   0% → 87.5% result comes entirely from the join — while creating an invalidation obligation
+   on every present and future catalog mutator: 19 `invalidate_skills_catalog()` calls across
+   9 modules, a mutation-driven generation counter, an exemption kwarg for background sweeps,
+   and a silent-staleness defect class for any path that forgot one (one such defect was found
+   in review, in the conductor-skill toggle). What it bought — a repeat read within 3s — the
+   frontend's 5-minute `skillsCacheStaleTime` already covered for project-scoped chats. The
+   store and the obligation were removed together.
+2. An epoch stamp then guarded against rows from a superseded assembly being handed out. Two
+   assemblies for one key cannot overlap (the assembly lock serializes them) and the handoff is
+   dropped when its last reader leaves, so that state was unreachable — its own test had to
+   forge it — while the epoch being global meant a NEIGHBOURING project's assembly invalidated
+   a live handoff and forced a redundant scan. It was deleted rather than made per-key, since
+   per-key it would guard nothing.
+3. The protocol briefly lived in its own leaf module, justified by mutators outside the
+   dashboard needing module-scope access to the invalidator. With no invalidator there are no
+   such callers, so it was folded into its single consumer and the injected-assembly indirection
+   went with it.
+
+**One mechanism remains: a single module-global assembly lock** (`LoopBoundLock`, matching the
+`api_system` metrics memo) — fast path, lock, re-check under it. The re-check is the join.
+Being module-global, readers of DIFFERENT keys serialize as well; at the ~0.6s idle assembly
+measured that wait is under a second, and a test pins the serialization in the direction
+shipped so reintroducing per-key locks is a deliberate decision rather than a drift.
+
+**Recorded escape, pre-agreed rather than rediscovered:** the cross-key cost concentrates
+exactly where the original motivation lived, so if assembly ever regresses well past ~0.6s a
+multi-project burst can see worse tail latency than the base's parallel scans. The standard
+alternative is a per-key in-flight future. Take that if it bites; it is not taken now because
+the contended figures that would justify it are withdrawn, and a per-key map was already
+removed once as unjustified machinery.
+
+**The staleness this admits, stated exactly.** Any reader that shares a scan may be served
+rows read before its own arrival. That covers two cases, not one: a reader that joins while
+the assembly is running, AND a reader that arrives while finished rows are still draining to
+their waiters. The bound is one assembly (~0.6s idle), not a clock. Sharing is NOT scoped to
+readers that arrived before the scan began — an earlier revision of this section claimed that,
+and it was false. Outside a burst nothing is shared at all.
+
+**The `?agent=` filter is deliberately NOT part of the key.** It is applied downstream as a
+comprehension over the assembled rows, and an end-to-end test drives two agents through the
+real endpoint in both orders to keep that true rather than merely currently-true — a join that
+ever shared the FILTERED result would fail whichever agent asked second.
+
 **Loading:**
 1. **Always-on**: skills with `always: true` have full content injected every new session
 2. **On-demand**: skill summaries (name + description + dir path) in session context; LLM can `cat` the file when relevant

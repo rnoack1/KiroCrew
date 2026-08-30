@@ -28,6 +28,7 @@ from kiro_crew.hooks import (
     validate_file_path,
     verified_replace_file_nolink,
 )
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.skill_trust import ReviewedProjectChanged as _ReviewedProjectChanged
@@ -1530,6 +1531,147 @@ async def _api_prompt_write(request: web.Request) -> web.Response:
 READONLY_SKILL_KEY_PREFIXES = ("kiro-user/", "kiro-workspace/")
 
 
+# Concurrent readers of the catalog share ONE scan. Nothing is stored and nothing
+# expires: the handoff below lives only while a reader is still queued for it.
+_catalog_lock = threading.Lock()
+_catalog_waiters: dict[tuple[str, str], int] = {}
+_catalog_handoff: dict[tuple[str, str], tuple[Any, list[dict[str, Any]]]] = {}
+
+# ``loop_lock`` exists to centralize this: a module-global ``asyncio.Lock`` would
+# bind to the first loop that touched it and raise on the rest (#4800).
+_catalog_assembly_lock = LoopBoundLock()
+
+
+def _shareable_catalog_rows(key: tuple[str, str], loader: Any) -> list[dict[str, Any]] | None:
+    """Return the in-flight assembly's rows if this reader may share them, else None.
+
+    Caller holds :data:`_catalog_lock`. Identity, not equality, on the loader: a
+    DIFFERENT loader is a different catalog even under the same home and project.
+    The handoff retains its loader reference precisely so this comparison stays
+    sound -- an identity check against a freed object is meaningless, because a
+    later allocation can land on the same address and read as a hit.
+
+    No generation or epoch check is needed. Two assemblies for one key cannot
+    overlap (the assembly lock serializes them) and the handoff is dropped when its
+    last reader leaves, so the only rows ever on offer are the current burst's.
+    """
+    offered = _catalog_handoff.get(key)
+    if offered is None:
+        return None
+    offering_loader, rows = offered
+    return rows if offering_loader is loader else None
+
+
+async def _assemble_skills_catalog(skills: Any, project_dir: Path | None) -> list[dict[str, Any]]:
+    """Return the catalog for *project_dir*, sharing one scan across concurrent readers.
+
+    Shape: a fast path off the assembly lock, then the lock, then a re-check UNDER
+    it. The re-check is what coalesces -- readers queued behind the leader take the
+    rows it just finished instead of each scanning (0% -> 87.5% at 8-way, measured).
+
+    NOTHING is retained past the burst, so a read that is not concurrent with
+    another always scans current on-disk state.
+
+    The staleness this admits, stated exactly: any reader that shares a scan may be
+    served rows read before its own arrival -- a mid-assembly joiner, and equally a
+    reader arriving while the finished rows are still draining to their waiters. The
+    bound is one assembly (~0.6s idle), not a clock. It is NOT scoped to readers
+    that arrived before the scan began; an earlier revision of this docstring
+    claimed that, and it was wrong.
+
+    ONE module-global assembly lock, so readers of different projects serialize
+    too. Accepted and pinned by test; the recorded escape if it bites is a per-key
+    in-flight future (see the spec).
+
+    No work preservation when the leader disconnects: the assembly is awaited
+    inline, so cancelling the leader makes the next waiter start over. That buys the
+    removal of an in-flight task map and its cancellation bookkeeping.
+
+    The rows are returned as-is, not copied, so a caller that mutates an entry in
+    place must copy first.
+    """
+    key = (str(Path.home()), str(project_dir) if project_dir is not None else "")
+    with _catalog_lock:
+        _catalog_waiters[key] = _catalog_waiters.get(key, 0) + 1
+    try:
+        with _catalog_lock:
+            rows = _shareable_catalog_rows(key, skills)
+        if rows is not None:
+            return rows
+        async with _catalog_assembly_lock:
+            # Re-check under the lock: the leader we queued behind may have just
+            # finished this catalog. This is the join.
+            with _catalog_lock:
+                rows = _shareable_catalog_rows(key, skills)
+            if rows is not None:
+                return rows
+            result = await _assemble_skills_catalog_uncached(skills, project_dir)
+            with _catalog_lock:
+                # Only offer the rows if someone else is queued; with no waiter
+                # there is nobody to hand them to.
+                if _catalog_waiters.get(key, 0) > 1:
+                    _catalog_handoff[key] = (skills, result)
+            return result
+    finally:
+        with _catalog_lock:
+            remaining = _catalog_waiters.get(key, 1) - 1
+            if remaining > 0:
+                _catalog_waiters[key] = remaining
+            else:
+                _catalog_waiters.pop(key, None)
+                # Last reader out, so the offer cannot outlive its burst.
+                _catalog_handoff.pop(key, None)
+
+
+async def _assemble_skills_catalog_uncached(
+    skills: Any,
+    project_dir: Path | None,
+) -> list[dict[str, Any]]:
+    """Do the actual catalog assembly, with no sharing or reuse of any kind.
+
+    Called by :func:`_assemble_skills_catalog`, which awaits it inline while
+    holding the coalescing lock -- so a caller that disconnects mid-assembly
+    cancels it and the next waiter reassembles.
+
+    Runs the edition capability lookup async (on the loop, non-blocking), then
+    offloads ALL blocking filesystem work — kirocrew ``list_skills()`` (os.walk +
+    per-file frontmatter reads), package path globs, kiro per-skill resolve/read,
+    and the agent annotation — onto the dedicated DISCOVERY pool in one job. This
+    work would stall the event loop past the loop-stall watchdog (~25s) on large
+    skills×agents catalogs if run on-loop. Use the discovery pool (NOT
+    ``maintenance_executor``): this scan is browser-triggerable and can be
+    seconds-long, so the maintenance pool would let a few dashboard tabs occupy
+    the workers the orphan-reaper sweeps need to recover from a wedge (see
+    :mod:`kiro_crew.executors`).
+
+    PRESERVES THE BASE'S RECORDED DEFAULT. The base stated here, as a decision
+    rather than an omission: "No result cache: the endpoint always reflects current
+    on-disk state, so freshly created/installed skills appear immediately
+    (correctness over the latency a cache would add)." That still holds. Coalescing
+    stores no result and has no expiry: concurrent readers share ONE scan, and a
+    read that is not part of a concurrent burst always scans current on-disk state.
+    An earlier revision of this change also added a 3s stored entry, which DID
+    reverse the default; review established that the store contributed none of the
+    measured win while obliging every catalog mutator to invalidate, so it was
+    removed. Sharing is additionally scoped to readers that arrived BEFORE the scan
+    began, so no request is ever handed rows that predate a write it came after.
+    """
+    mgr = _capability_manager()
+    try:
+        package_skills = await mgr.list_skills() if mgr.available() else []
+    except Exception:
+        # The capability manager is one of three skill sources; degrade to "no
+        # package skills" rather than 500 the whole /api/skills endpoint.
+        package_skills = []
+    return await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(),
+        collect_skills_blocking,
+        skills,
+        package_skills,
+        project_dir,
+    )
+
+
 async def api_skills(request: web.Request) -> web.Response:
     """GET /api/skills — list skills from all known sources.
 
@@ -1575,32 +1717,7 @@ async def api_skills(request: web.Request) -> web.Response:
     # Strict: must match what SkillsLoader will resolve for THIS chat, or the
     # catalog advertises a skill whose $token expands to nothing.
     project_dir: Path | None = requesting_slot_project(state, session_key)
-    # Run the edition capability lookup async (on the loop, non-blocking), then offload ALL
-    # blocking filesystem work — kirocrew list_skills() (os.walk + per-file
-    # frontmatter reads), package path globs, kiro per-skill resolve/read, and the
-    # agent annotation — onto the dedicated DISCOVERY pool in one job. This work
-    # would stall the event loop past the loop-stall watchdog (~25s) on large
-    # skills×agents catalogs if run on-loop. Use the discovery pool
-    # (NOT maintenance_executor): this scan is browser-triggerable and can be
-    # seconds-long, so the maintenance pool would let a few dashboard tabs
-    # occupy the workers the orphan-reaper sweeps need to recover from a wedge
-    # (see kiro_crew.executors). No result cache: the endpoint always reflects
-    # current on-disk state, so freshly created/installed skills appear
-    # immediately (correctness over the latency a cache would add).
-    mgr = _capability_manager()
-    try:
-        package_skills = await mgr.list_skills() if mgr.available() else []
-    except Exception:
-        # The capability manager is one of three skill sources; degrade to "no
-        # package skills" rather than 500 the whole /api/skills endpoint.
-        package_skills = []
-    result = await asyncio.get_running_loop().run_in_executor(
-        discovery_executor(),
-        collect_skills_blocking,
-        skills,
-        package_skills,
-        project_dir,
-    )
+    result = await _assemble_skills_catalog(skills, project_dir)
     agent = request.query.get("agent") or None
     if agent:
         globs = await asyncio.get_running_loop().run_in_executor(
