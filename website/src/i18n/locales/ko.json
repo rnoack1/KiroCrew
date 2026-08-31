@@ -9408,6 +9408,10 @@
         "copy_text_failed": "복사하지 못했습니다",
         "copy_text_unavailable": "이 환경에서는 클립보드가 차단되어 있습니다. 게시글 텍스트가 선택되어 있으니 Ctrl+C / ⌘C를 누르세요. 편집한 카드 텍스트는 카드에서 직접 복사하세요.",
         "export_failed": "공유 카드를 만들 수 없습니다"
+      },
+      "sectionMarkerRow": {
+        "end_of": "{{label}} 끝",
+        "end_of_section": "섹션 나누기"
       }
     },
     "chatPage": {
@@ -9509,7 +9513,9 @@
       "could_not_generate_title": "제목을 생성할 수 없습니다",
       "could_not_open_side_chat": "사이드 채팅을 열 수 없습니다",
       "side_command_not_run": "/side 명령이 실행되지 않았습니다. 메시지는 입력창에 그대로 있습니다.",
-      "could_not_send_to_side_chat": "사이드 채팅에 보낼 수 없습니다"
+      "could_not_send_to_side_chat": "사이드 채팅에 보낼 수 없습니다",
+      "fork_too_large_error_head": "이 대화는 너무 커서 분기할 수 없습니다. 더 이전 메시지에서 분기해 보세요. 분기는 최대 10,000개의 메시지를 복사할 수 있습니다.",
+      "fork_too_large_error_tail": "이 대화는 너무 커서 분기할 수 없습니다. 더 이후 메시지에서 분기해 보세요. 분기는 최대 10,000개의 메시지를 복사할 수 있습니다."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1개 건너뜀 — 현재 선택됨)",

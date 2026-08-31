@@ -9682,6 +9682,10 @@
         "copy_text_failed": "Falha ao copiar",
         "copy_text_unavailable": "A área de transferência está bloqueada aqui. O texto da sua publicação está selecionado — pressione Ctrl+C / ⌘C. O texto do cartão que você editou, copie do próprio cartão.",
         "export_failed": "Não foi possível gerar o cartão de compartilhamento"
+      },
+      "sectionMarkerRow": {
+        "end_of": "Fim de: {{label}}",
+        "end_of_section": "Quebra de seção"
       }
     },
     "chatPage": {
@@ -9785,7 +9789,9 @@
       "could_not_generate_title": "Não foi possível gerar um título",
       "could_not_open_side_chat": "Não foi possível abrir o chat lateral",
       "side_command_not_run": "O comando /side não foi executado. Sua mensagem continua no editor.",
-      "could_not_send_to_side_chat": "Não foi possível enviar para o chat lateral"
+      "could_not_send_to_side_chat": "Não foi possível enviar para o chat lateral",
+      "fork_too_large_error_head": "Esta conversa é muito grande para ser bifurcada. Tente bifurcar a partir de uma mensagem anterior. Uma bifurcação pode copiar no máximo 10.000 mensagens.",
+      "fork_too_large_error_tail": "Esta conversa é muito grande para ser bifurcada. Tente bifurcar a partir de uma mensagem posterior. Uma bifurcação pode copiar no máximo 10.000 mensagens."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",

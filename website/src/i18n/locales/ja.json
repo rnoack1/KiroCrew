@@ -9408,6 +9408,10 @@
         "copy_text_failed": "コピーできませんでした",
         "copy_text_unavailable": "この環境ではクリップボードがブロックされています。投稿テキストは選択済みです — Ctrl+C / ⌘C を押してください。編集したカードのテキストはカードから直接コピーしてください。",
         "export_failed": "共有カードを生成できませんでした"
+      },
+      "sectionMarkerRow": {
+        "end_of": "{{label}} の終わり",
+        "end_of_section": "セクション区切り"
       }
     },
     "chatPage": {
@@ -9509,7 +9513,9 @@
       "could_not_generate_title": "タイトルを生成できませんでした",
       "could_not_open_side_chat": "サイドチャットを開けませんでした",
       "side_command_not_run": "/side コマンドは実行されませんでした。メッセージは入力欄に残っています。",
-      "could_not_send_to_side_chat": "サイドチャットに送信できませんでした"
+      "could_not_send_to_side_chat": "サイドチャットに送信できませんでした",
+      "fork_too_large_error_head": "この会話は大きすぎるためフォークできません。 より前のメッセージからフォークしてください。 フォークでコピーできるメッセージは最大 10,000 件です。",
+      "fork_too_large_error_tail": "この会話は大きすぎるためフォークできません。 より後のメッセージからフォークしてください。 フォークでコピーできるメッセージは最大 10,000 件です。"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",

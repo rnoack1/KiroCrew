@@ -3652,7 +3652,9 @@
       "could_not_generate_title": "Couldn't generate a title",
       "could_not_open_side_chat": "Couldn't open the side chat",
       "side_command_not_run": "The /side command was not run. Your message is still in the composer.",
-      "could_not_send_to_side_chat": "Couldn't send to the side chat"
+      "could_not_send_to_side_chat": "Couldn't send to the side chat",
+      "fork_too_large_error_head": "This conversation is too large to fork. Try forking from an earlier message. A fork can copy at most 10,000 messages.",
+      "fork_too_large_error_tail": "This conversation is too large to fork. Try forking from a later message. A fork can copy at most 10,000 messages."
     },
     "chatSidebar": {
       "answered_by": "answered by {{agent}}",

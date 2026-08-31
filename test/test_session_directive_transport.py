@@ -472,6 +472,7 @@ DIRECTIVE_PAYLOADS: dict[str, dict[str, object]] = {
     # The tool emits an empty payload: a caller asking for a clean context always
     # wants a clean one, so there is nothing to carry.
     "reset_conversation": {},
+    "section_marker": {"label": "Fixture section"},
 }
 
 
