@@ -292,13 +292,63 @@ send time.
   semaphore may be held for a full turn, so it is ALWAYS acquired with the
   global `self._lock` RELEASED (pinning the lock across that wait would freeze
   session creation for every key and reintroduce a lock-ordering deadlock).
-  Because a session can be recycled/removed or its backing process can die
-  while a caller waits on the semaphore, every reuse path re-checks identity +
-  liveness AFTER acquiring it, through the single shared helper
-  `_reacquire_and_validate(key, sess)`. Its contract: it returns `True` with
+  Because a session can be recycled/removed, its backing process can die, or its
+  project directory can change while a caller waits on the semaphore, every reuse
+  path re-checks identity + liveness + BOUND CWD AFTER acquiring it, through the
+  single shared helper
+  `_reacquire_and_validate(key, sess, *, cwd=None)`. Its contract: it returns `True` with
   the semaphore **still held** (caller MUST `release`), or `False` having
   **already released** it (session went stale — caller evicts via
-  `_evict_stale_session` and cold-starts). Cancellation while parked on
+  `_evict_stale_session` and cold-starts). The cwd dimension is validated HERE and
+  not at the reuse decision, because that decision runs before the semaphore is
+  claimed and evicting there could tear down a turn still streaming. Both sides of
+  that comparison are normalized through `str(Path(...))` — the request AND the
+  provider's reported binding — so the result cannot depend on which side happened to
+  be canonicalised already, and a caller naming a stable directory (trailing slash,
+  doubled separator, or a platform whose `Path` rewrites the separators) cannot churn
+  a warm session every turn. A caller
+  passing no `cwd` states no requirement, so it cannot trigger a mismatch — which is
+  why a teardown that has to be REFUSED additionally ARMS THE KEY via
+  `mark_retire_on_next_claim`: a cleared project cannot be expressed as a cwd
+  requirement, so the arm, not the directory, is what stops the next claim being handed
+  the stale binding. The arm is keyed by STRING rather than by session object because a
+  cold start holds no registry entry until it finishes, so "nothing registered" can mean
+  a provider bound to the pre-change directory is already on its way; the key is
+  consumed as it is read, costing one cold start rather than refusing that key forever.
+
+  Alongside the arm, each key carries a MONOTONIC GENERATION (`key_generation`),
+  bumped by every project change — whether it arms (`mark_retire_on_next_claim`) or
+  not (`note_project_change`, which the agent- and workspace-switch handlers call
+  because they commit a new project and tear the session down directly, recording the
+  directory they committed so an evicted start's RETRY binds that rather than the one its
+  own frame carried). A cold start
+  snapshots the generation before its first `await` and is refused at registration if
+  the key has moved past it. This exists because the DIRECTORY a claim states cannot
+  order two claims: a start begun before the change and a slot recreated under the same
+  name after it both name something other than the armed target, so only the generation
+  separates them. It also decides when an arm is obsolete — an arm records the
+  generation it was raised at, and `_live_arm` drops one a newer change has superseded,
+  which is why a later selection can never be outranked by an earlier arm.
+
+  The spend/keep matrix is asymmetric and deliberate, and every teardown states its side
+  of it through ONE allocation-layer primitive,
+  `note_key_teardown(key, *, ends_generation)`, whose keyword is required so a new path
+  cannot inherit a default silently. A refused reset never spends the
+  arm (the reason for the teardown has not gone away); a landed reset does not either
+  (the arm is keyed on the target directory, so the eager respawn is reused rather than
+  torn down). `remove`, `destroy` and `close_all` END the slot generation and so spend
+  the arm, because the only claim left for it to apply to is a different slot recreated
+  under the same name; `remove_if_unclaimed` drops a spawn the slot never took, leaving
+  that slot live and its arm still owed to a real claim. Spending the arm on `remove` is
+  safe only because staleness no longer depends on the arm's presence: the GENERATION
+  survives every teardown here, which is what still refuses a start already in flight.
+  `key_generation` is cleared only by `close_all`, so on a long-lived gateway it grows
+  with the number of keys that ever saw a project change — bounded by project-change
+  count, and accepted rather than reclaimed.
+  On
+  `False` the helper evicts BEFORE releasing the permit: releasing first would
+  leave the session registered with a free permit, letting another acquirer win a
+  provider that the eviction then shuts down mid-command. Cancellation while parked on
   `self._lock` after the acquire releases the semaphore before propagating, so
   the key never stays permanently locked. Liveness uses
   `_provider_effectively_alive` (a dead Claude-Code `per_session` process

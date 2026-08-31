@@ -37,6 +37,7 @@ from kiro_crew.config.loader import (
     published_autocompact_pct,
     resolve_agent_bindings,
 )
+from kiro_crew.config.paths import CWD_CLEARED
 from kiro_crew.dashboard import remote_mirror
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed
 from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
@@ -5522,6 +5523,12 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             slot.workspace = new_workspace
         if slot.project == pre_await_project:
             slot.project = new_project
+        # This switch changes the project WITHOUT arming, so an arm left by an earlier
+        # change still names the previous directory and would decide the next claim.
+        # The SESSION key, not the slot's: a channel-linked slot's turns run on the
+        # channel's session, so `dashboard:<slot>` would advance a generation nothing reads.
+        switched_session_key = effective_session_key(slot)
+        state.sessions.note_project_change(switched_session_key, slot.project or CWD_CLEARED)
 
         # Reset session so the next message uses the new agent.
         logger.info(
@@ -5529,7 +5536,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         )
         teardown_incomplete = False
         try:
-            await _reset_slot_session(state, slot, _history_key_for(name))
+            await _reset_slot_session(state, slot, switched_session_key)
         except Exception:
             # The switch is COMMITTED regardless: the reset pops the session
             # before its shutdown can fail, so the new binding is what every
@@ -6870,6 +6877,9 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
         prior_project = slot.project
         slot.workspace = ws_name
         slot.project = default_project_dir(ws_name)
+        # Advanced with the COMMIT, not the reset, and carrying the directory it committed:
+        # a stale start is evicted and RETRIED, and the retry binds this rather than its own.
+        state.sessions.note_project_change(session_key, slot.project or CWD_CLEARED)
         logger.info("Slot %s workspace switched to %r, resetting session", name, ws_name)
         # skip_if_busy: the total_messages guard above is checked before this
         # await, and message dispatch does not take slot._lock — a first send
@@ -6927,6 +6937,9 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
                     # guard gives.
                     slot.workspace = prior_workspace
                     slot.project = prior_project
+                    # The switch is REJECTED: an arm still naming the rejected project would
+                    # send the next claim there, so re-point it at what we rolled back to.
+                    state.sessions.note_project_change(session_key, prior_project or CWD_CLEARED)
                     return web.json_response(
                         {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
                     )
@@ -6945,6 +6958,9 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
                 elif not reset_ok:
                     slot.workspace = prior_workspace
                     slot.project = prior_project
+                    # The switch is REJECTED: an arm still naming the rejected project would
+                    # send the next claim there, so re-point it at what we rolled back to.
+                    state.sessions.note_project_change(session_key, prior_project or CWD_CLEARED)
                     return web.json_response(
                         {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
                     )
@@ -6958,6 +6974,9 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
             # current binding.
             slot.workspace = prior_workspace
             slot.project = prior_project
+            # The switch is REJECTED: an arm still naming the rejected project would
+            # send the next claim there, so re-point it at what we rolled back to.
+            state.sessions.note_project_change(session_key, prior_project or CWD_CLEARED)
             return web.json_response(
                 {"error": "slot session was rebound during the switch", "code": "session_rebound"},
                 status=409,
@@ -7055,7 +7074,11 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         # from inside the kiro-cli process group (the set_project MCP tool); an
         # inline reset would killpg() the caller. Consumed in chat_runner.
         if project != old_project:
-            slot._pending_reset_history_key = _history_key_for(name)
+            # A channel-linked slot runs its turns on the channel's own session, so
+            # the unconditional ``dashboard:`` prefix would name a nonexistent
+            # ``dashboard:slack:<ts>``: the teardown would miss the live session and
+            # a later turn would reuse it with the pre-change directory.
+            slot._pending_reset_history_key = effective_session_key(slot)
             # Speculatively re-create the session rooted at the new project so the
             # cwd change is paid during think-time. The eager task consumes the
             # deferred reset itself, but only when no turn is running — the

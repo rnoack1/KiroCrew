@@ -93,6 +93,9 @@ class SessionLifecycleOwner(Protocol):
 
     _compact_cooldown_until: MutableMapping[str, float]
     _compact_pending_verdict: MutableMapping[str, float]
+
+    def _allocation_boundary(self) -> Any: ...
+
     _cleanup_task: asyncio.Task[Any] | None
     _background_tasks: set[asyncio.Task[Any]]
 
@@ -512,6 +515,9 @@ class SessionLifecycleService:
             self._suppress_replay.discard(key)
             owner._compact_pending_verdict.pop(key, None)
             self._origin_links.pop(key, None)
+            # Cleanup, not the end of the slot: the session map survives it and so must the
+            # arm, which is also the retry target for a start this eviction sends back.
+            owner._allocation_boundary().note_key_teardown(key, ends_generation=False)
             if session is not None:
                 # Same tick as the pop: see reset for why recording after the
                 # teardown awaits would consume a successor's start.
@@ -684,6 +690,9 @@ class SessionLifecycleService:
             self._suppress_replay.discard(key)
             owner._compact_pending_verdict.pop(key, None)
             self._origin_links.pop(key, None)
+            # The slot stays live and its arm is still owed to a real claim: this drops a
+            # spawn the slot never took, not the slot.
+            owner._allocation_boundary().note_key_teardown(key, ends_generation=False)
             # Same tick as the removal: see reset.
             await record_session_ended(key, end_reason=END_REASON_UNCLAIMED)
         await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
@@ -711,6 +720,9 @@ class SessionLifecycleService:
             # a NEW conversation, and inheriting the deleted one's threshold
             # while the slot reports "following global" is silent divergence.
             owner.set_autocompact_pct(key, None)
+            # The arm dies with the key for the same reason: a key destroyed outright
+            # has no successor left to pay it, so the entry could never be cleared.
+            owner._allocation_boundary().note_key_teardown(key, ends_generation=True)
             # _origin_links deliberately survives destroy; existing callers
             # rely on the historical asymmetry with reset/remove.
             if session is not None:
@@ -992,6 +1004,8 @@ class SessionLifecycleService:
             owner._compact_cooldown_until.clear()
             self._suppress_replay.clear()
             owner._compact_pending_verdict.clear()
+            closing_alloc = owner._allocation_boundary()
+            closing_alloc.discard_all_retire_arms()
             # Same lock hold as the clear: the whole drained set is accounted for
             # in one call, so the awaited unlink cannot be cancelled between two
             # keys. Per-key awaits would leave every key after the cancellation

@@ -10689,7 +10689,7 @@ class TestPythonStageLoop:
         slot.queue_append("queued during plan")
 
         async def _auth_run_chat(s, sl, msg, **kw):
-            sl._last_turn_auth_required = True  # signed-out CLI discovered this stage
+            sl._queue_held = True  # signed-out CLI discovered this stage
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _auth_run_chat)
         start_next = AsyncMock(return_value=False)
@@ -10701,6 +10701,37 @@ class TestPythonStageLoop:
 
         start_next.assert_not_awaited()  # queue held for post-login resume
         assert [i["content"] for i in slot._queue] == ["queued during plan"]
+
+    @pytest.mark.asyncio
+    async def test_stage_handoff_still_drains_when_nothing_is_held(self, tmp_path, monkeypatch):
+        """Positive control for the gate above: with no hold the end-of-plan handoff
+        must still drain the queue, so the fix narrows one branch rather than
+        stranding every queued follow-up after a plan."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.chat import _stage_loop
+
+        state = MagicMock()
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for = MagicMock(return_value=[])
+        slot = self._make_slot(max_stages=1)
+        state._slots = {slot.key: slot}
+        slot.queue_append("queued during plan")
+
+        async def _clean_run_chat(s, sl, msg, **kw):
+            sl._queue_held = False
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _clean_run_chat)
+        start_next = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_orchestrator._start_next_queued_turn", start_next
+        )
+
+        await _stage_loop(state, slot, auto_run=True)
+
+        start_next.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_orchestrating_slot_queues_message(self, tmp_path, monkeypatch):
