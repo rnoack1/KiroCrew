@@ -4415,9 +4415,9 @@ class _ChatSlot:
         """Held notes whose context half has not reached the queue yet."""
         return self._buffers.deferred_context_count(self)
 
-    def flush_deferred_notes(self) -> int:
+    def flush_deferred_notes(self, *, markers_only: bool = False) -> int:
         """Flush held notes in order, restoring the unwritten suffix on failure."""
-        return self._buffers.flush_deferred_notes(self, logger=logger)
+        return self._buffers.flush_deferred_notes(self, logger=logger, markers_only=markers_only)
 
     def mark_permission_resolved(self, approval_id: str, decision: str = "approved") -> None:
         """Update the matching stored permission row without marking it dirty."""
