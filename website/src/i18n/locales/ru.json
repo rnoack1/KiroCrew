@@ -9153,7 +9153,7 @@
       "reply_2_many": "{{count}} ответов",
       "reply_2_one": "{{count}} ответ",
       "reply_2_other": "{{count}} ответа",
-      "reset_role_s_llm_session_the_channel_s_shared_me": "Сбросить LLM-сессию {{role}}. Общая история сообщений канала сохраняется.",
+      "reset_role_s_llm_session_the_channel_s_shared_me": "Сбросить LLM-сессию {{role}}. Общая история сообщений канала сохраняется. Если он ещё работает, ничего не очищается.",
       "role": "Роль",
       "role_e_g_logs_agent": "Роль (напр. агент по логам)",
       "running_tool": "выполняет инструмент…",
@@ -9168,7 +9168,7 @@
       "task": "Задача",
       "task_e_g_search_cloudwatch_logs": "Задача (напр. Найти в логах CloudWatch)",
       "team_preset": "Шаблон команды",
-      "this_will_reset_conversation_history_for_all_age": "История переписки будет сброшена для всех агентов. Настройки сохранятся.",
+      "this_will_reset_conversation_history_for_all_age": "История переписки будет сброшена для всех агентов. Настройки сохранятся. Агенты, которые ещё работают, сохраняют свою историю.",
       "thread": "Ветка",
       "topic": "Тема",
       "failed_to_load_channels": "Не удалось загрузить каналы",
@@ -9178,7 +9178,10 @@
       "failed_to_dismiss_agent": "Не удалось убрать агента",
       "failed_to_update_agent": "Не удалось обновить агента",
       "failed_to_close_channel": "Не удалось закрыть канал",
-      "failed_to_clear_context": "Не удалось очистить контекст"
+      "failed_to_clear_context": "Не удалось очистить контекст",
+      "clear_context_busy_error": "Контекст сохранён для {{roles}} — ещё в процессе. Очистите снова, когда они закончат.",
+      "clear_context_cleared_roles": "Очищено для {{roles}}.",
+      "clear_context_partially_cleared": "Контекст частично очищен"
     },
     "chat": {
       "activityViewer": {

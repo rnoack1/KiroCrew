@@ -1,4 +1,4 @@
-import { AlertTriangle, X } from 'lucide-react'
+import { AlertTriangle, Info, X } from 'lucide-react'
 import AskAgentButton from './AskAgentButton'
 import type { ErrorReport } from '../utils/errorReport'
 
@@ -23,6 +23,13 @@ import { i18nT } from '../i18n/t'
  * run of text that sits inside an existing button row — those sites are laid out
  * as flex children, so dropping a bordered box into one would break the row. The
  * variant is a layout choice only; both carry the same agent hand-off.
+ *
+ * ## `warn` is severity, and it is a separate axis from `variant`
+ *
+ * Danger chrome is read before the words are, so a notice reporting a PARTIAL
+ * SUCCESS in red alarm colours tells a scanning user the operation failed and
+ * invites them to re-run it. `warn` is for that case — something was withheld,
+ * nothing broke. Leave it off (the default) for a genuine failure.
  */
 export default function ErrorNotice({
   message,
@@ -30,6 +37,7 @@ export default function ErrorNotice({
   title,
   onDismiss,
   variant = 'block',
+  warn = false,
   askAgent = false,
   onHandoff,
   className = '',
@@ -50,6 +58,11 @@ export default function ErrorNotice({
   onDismiss?: () => void
   /** `block` = boxed banner; `inline` = compact text for an existing flex row. */
   variant?: 'block' | 'inline'
+  /**
+   * Severity, independent of `variant`. On for an outcome that withheld
+   * something without failing (a partial clear); off for a real failure.
+   */
+  warn?: boolean
   /**
    * Opt IN to the agent hand-off. **Defaults to `false`, and the direction of that
    * default is the safety property.**
@@ -93,10 +106,14 @@ export default function ErrorNotice({
 }) {
   if (!message) return null
 
+  const fg = warn ? 'text-warn' : 'text-danger'
+  const dismissFg = warn ? 'text-warn/70 hover:text-warn' : 'text-danger/70 hover:text-danger'
+  const Icon = warn ? Info : AlertTriangle
+
   if (variant === 'inline') {
     return (
-      <span role="alert" className={`inline-flex items-center gap-1.5 text-[12px] text-danger ${className}`} data-testid={testId}>
-        <AlertTriangle size={14} className="shrink-0" aria-hidden="true" />
+      <span role="alert" className={`inline-flex items-center gap-1.5 text-[12px] ${fg} ${className}`} data-testid={testId}>
+        <Icon size={14} className="shrink-0" aria-hidden="true" />
         {title && <strong className="font-semibold">{title}</strong>}
         <span className={`min-w-0 ${messageClassName}`} style={{ overflowWrap: 'anywhere' }}>{message}</span>
         {askAgent && (
@@ -109,7 +126,7 @@ export default function ErrorNotice({
         {onDismiss && (
           <button
             type="button"
-            className="shrink-0 bg-transparent border-none p-0 cursor-pointer text-danger/70 hover:text-danger transition-colors"
+            className={`shrink-0 bg-transparent border-none p-0 cursor-pointer ${dismissFg} transition-colors`}
             aria-label={i18nT('components.errorNotice.dismiss')}
             onClick={onDismiss}
           >
@@ -123,10 +140,10 @@ export default function ErrorNotice({
   return (
     <div
       role="alert"
-      className={`rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 flex items-start gap-2 text-[13px] text-danger ${className}`}
+      className={`rounded-lg border ${warn ? 'border-warn/40 bg-warn/10' : 'border-danger/40 bg-danger/10'} px-3 py-2 flex items-start gap-2 text-[13px] ${fg} ${className}`}
       data-testid={testId}
     >
-      <AlertTriangle size={14} className="mt-[2px] shrink-0" aria-hidden="true" />
+      <Icon size={14} className="mt-[2px] shrink-0" aria-hidden="true" />
       <div className="min-w-0 flex-1 whitespace-pre-wrap" style={{ overflowWrap: 'anywhere' }}>
         {title && <strong className="font-semibold">{title} </strong>}
         {/* Wrapped only when asked: the bare text node is the shape every
@@ -144,7 +161,7 @@ export default function ErrorNotice({
       {onDismiss && (
         <button
           type="button"
-          className="shrink-0 bg-transparent border-none p-0 cursor-pointer text-danger/70 hover:text-danger transition-colors"
+          className={`shrink-0 bg-transparent border-none p-0 cursor-pointer ${dismissFg} transition-colors`}
           aria-label={i18nT('components.errorNotice.dismiss')}
           onClick={onDismiss}
         >

@@ -8901,7 +8901,7 @@
       "reply": "Antworten",
       "reply_2_one": "{{count}} Antwort",
       "reply_2_other": "{{count}} Antworten",
-      "reset_role_s_llm_session_the_channel_s_shared_me": "LLM-Sitzung von {{role}} zurücksetzen. Der gemeinsame Nachrichtenverlauf des Kanals bleibt erhalten.",
+      "reset_role_s_llm_session_the_channel_s_shared_me": "LLM-Sitzung von {{role}} zurücksetzen. Der gemeinsame Nachrichtenverlauf des Kanals bleibt erhalten. Wenn sie noch arbeiten, wird nichts gelöscht.",
       "role": "Rolle",
       "role_e_g_logs_agent": "Rolle (z. B. Protokoll-Agent)",
       "running_tool": "Tool wird ausgeführt…",
@@ -8916,7 +8916,7 @@
       "task": "Aufgabe",
       "task_e_g_search_cloudwatch_logs": "Aufgabe (z. B. CloudWatch-Protokolle durchsuchen)",
       "team_preset": "Team-Voreinstellung",
-      "this_will_reset_conversation_history_for_all_age": "Dies setzt den Gesprächsverlauf für alle Agenten zurück. Konfigurationen bleiben erhalten.",
+      "this_will_reset_conversation_history_for_all_age": "Dies setzt den Gesprächsverlauf für alle Agenten zurück. Konfigurationen bleiben erhalten. Noch arbeitende Agenten behalten ihren Verlauf.",
       "thread": "Thread",
       "topic": "Thema",
       "failed_to_load_channels": "Kanäle konnten nicht geladen werden",
@@ -8926,7 +8926,10 @@
       "failed_to_dismiss_agent": "Agent konnte nicht entfernt werden",
       "failed_to_update_agent": "Agent konnte nicht aktualisiert werden",
       "failed_to_close_channel": "Kanal konnte nicht geschlossen werden",
-      "failed_to_clear_context": "Kontext konnte nicht gelöscht werden"
+      "failed_to_clear_context": "Kontext konnte nicht gelöscht werden",
+      "clear_context_busy_error": "Kontext für {{roles}} beibehalten — noch aktiv. Erneut löschen, wenn sie fertig sind.",
+      "clear_context_cleared_roles": "Für {{roles}} geleert.",
+      "clear_context_partially_cleared": "Kontext teilweise geleert"
     },
     "chat": {
       "activityViewer": {

@@ -4,7 +4,7 @@ import { Hourglass, Ear, Check, X, Wrench, Radio, VolumeX, User, MessageSquare, 
 import { useAppSelector, useAppDispatch } from '../store'
 import { triggerRefresh } from '../store/dashboardSlice'
 import type { RootState } from '../store'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 import ApprovalCard from '../components/ApprovalCard'
 import ErrorNotice from '../components/ErrorNotice'
 import { Btn, Input, Badge, EmptyState, PageHeader } from '../components/ui'
@@ -55,6 +55,8 @@ interface Channel {
 interface ChannelPageError {
   title: string
   message: string
+  /** On for an outcome that withheld something without failing. */
+  warn?: boolean
 }
 
 /* Map snake_case backend → camelCase frontend */
@@ -141,6 +143,46 @@ function AgentBadge({ agent, index }: { agent: ChannelAgent; index: number }) {
  * this title, so it must be the tool's identity, never the agent role. */
 export function approvalToolTitle(content: string): string {
   return /^⚠️ Approval needed: \*\*([\s\S]*)\*\*\n```/.exec(content)?.[1] || ''
+}
+
+/** The message a clear-context click owes the user when the server refused some
+ * roles, or `''` when it cleared everything it was asked to.
+ *
+ * A PARTIAL refusal answers 200 with the refusing roles in `busy`, so the
+ * caller's catch never sees it. Returning the copy rather than alerting from
+ * here keeps the decision testable and lets both call sites share one
+ * spelling. The string names the roles, the CAUSE and the REMEDY: a bare role
+ * list in an error slot tells the reader neither why it failed nor what to do. */
+export function clearContextBusyMessage(
+  res: { busy?: unknown; cleared?: unknown } | null | undefined,
+): string {
+  const busy = res?.busy
+  if (!Array.isArray(busy) || busy.length === 0) return ''
+  const kept = i18nT('pages.channelPage.clear_context_busy_error', { roles: busy.join(', ') })
+  // Naming what DID clear stops a partial refusal reading as a total one, which sends the
+  // user back through the confirm dialog to re-clear roles that are already cleared.
+  const cleared = res?.cleared
+  if (!Array.isArray(cleared) || cleared.length === 0) return kept
+  // Cleared leads: it matches the "partially cleared" title's emphasis, and a total refusal
+  // (no cleared roles) returns above, so the kept clause still leads when nothing cleared.
+  return `${i18nT('pages.channelPage.clear_context_cleared_roles', {
+    roles: cleared.join(', '),
+  })} ${kept}`
+}
+
+/* A TOTAL refusal answers 409 rather than 200, so it arrives as a throw and never reaches
+ * the helper above. Returns '' for anything else, leaving every other failure to the
+ * page's generic `fail`, whose `apiError` would otherwise surface the backend's English
+ * prose for this one -- doubled phrasing, and mixed-language on a localized page. */
+export function clearContextBusyRefusal(e: unknown): string {
+  if (!(e instanceof ApiError) || e.status !== 409) return ''
+  try {
+    const parsed = JSON.parse(e.body) as { code?: string; busy?: unknown }
+    if (parsed?.code === 'turn_in_flight') return clearContextBusyMessage(parsed)
+  } catch {
+    // A 409 whose body is not the structured refusal is left to the generic path.
+  }
+  return ''
 }
 
 function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }: {
@@ -534,6 +576,8 @@ const apiError = (err: unknown, fallback: string) => {
 
 export default function ChannelPage() {
   const [channels, setChannels] = useState<Channel[]>([])
+  // Clear-context refusals surface here rather than through `alert()`: a native dialog
+  // drops the structured report and the agent hand-off ErrorNotice carries.
   const [presets, setPresets] = useState<Preset[]>(FALLBACK_PRESETS)
   const [activeId, setActiveId] = useState<string | null>(null)
   const [input, setInput] = useState('')
@@ -548,6 +592,12 @@ export default function ChannelPage() {
   /** The last channel-list read was refused, so an empty list is unknown, not empty. */
   const [listFailed, setListFailed] = useState(false)
   const [error, setError] = useState<ChannelPageError | null>(null)
+  const errorNoticeRef = useRef<HTMLDivElement>(null)
+  // Kept apart from the page notice: this one can sit above an unsent composer draft, so
+  // it must not offer the agent hand-off, for the reason postError does not either.
+  const [clearError, setClearError] = useState<(ChannelPageError & { channelId?: string }) | null>(
+    null,
+  )
   // A rejected channelPost, kept apart from `error`: its notice sits next to
   // the composer that still holds the unsent text (keyed by thread so it shows
   // beside the right one), so it must not offer the agent hand-off `error` does.
@@ -560,6 +610,51 @@ export default function ChannelPage() {
     // `keepExisting`: a secondary read (the team presets) must not paper over
     // the primary one (the channel list) when both fail on the same load.
     setError(prev => (opts?.keepExisting && prev ? prev : next))
+  }, [])
+  // Clear-context has two refusal shapes `fail` cannot express: a PARTIAL refusal answers
+  // 200 and never throws, and a TOTAL one answers 409 carrying the roles.
+  const noteClearRefusal = useCallback((channelId: string, res: { busy?: unknown; cleared?: unknown } | null | undefined) => {
+    const message = clearContextBusyMessage(res)
+    // A clean clear must DROP any earlier refusal: the user who follows "Retry when they
+    // finish" would otherwise still be reading the banner for the attempt that failed.
+    if (!message) {
+      setClearError(null)
+      return
+    }
+    // A bold "Failed" lead over a body ending "Cleared for Scribe" contradicts itself, and
+    // the scanning reader re-runs the clear for roles that are already done.
+    const cleared = res?.cleared
+    const partial = Array.isArray(cleared) && cleared.length > 0
+    setClearError({
+      title: i18nT(
+        partial
+          ? 'pages.channelPage.clear_context_partially_cleared'
+          : 'pages.channelPage.failed_to_clear_context',
+      ),
+      message,
+      // Danger chrome reads as "it failed" before the title is read, and a partial clear
+      // DID clear something -- red there invites a re-run of work already done.
+      warn: partial,
+      channelId,
+    })
+  }, [])
+  const failClearContext = useCallback((channelId: string, err: unknown) => {
+    const title = i18nT('pages.channelPage.failed_to_clear_context')
+    setClearError({
+      title,
+      message: clearContextBusyRefusal(err) || apiError(err, title),
+      channelId,
+    })
+  }, [])
+  const refreshAfterClear = useCallback(async (channelId: string) => {
+    // The redraw is not the operation: routing its failure through failClearContext claimed
+    // a completed clear had failed, sending the user back to re-clear finished work.
+    try {
+      const res = await api.channelGet(channelId)
+      setChannels(prev => prev.map(c => c.id === channelId ? mapChannel(res) : c))
+    } catch {
+      // The clear landed; only this view is stale, and the next poll redraws it.
+    }
   }, [])
   const [threadId, setThreadId] = useState<string | null>(null)
   // Which thread the unsent reply belongs to, so it is neither discarded on
@@ -595,10 +690,27 @@ export default function ChannelPage() {
   // message in it, and the panel lists its members. Leaving either set across a change
   // of channel is not cosmetic -- the thread panel's composer sends against the ACTIVE
   // channel, so a stale id parents a reply to a message that channel does not contain.
+  // A clear-context refusal is per-channel for the same reason: it names THAT channel's
+  // busy roles, so it must not persist above another channel's composer. `error` is dropped
+  // on the same grounds -- it names the channel whose request failed, not this one.
   useEffect(() => {
+    setError(null)
+    setClearError(null)
     setThreadId(null)
     setShowAgents(false)
   }, [activeId])
+
+  // A result whose channel is no longer active is not shown, and so must not scroll either.
+  const shownClearError =
+    clearError && (!clearError.channelId || clearError.channelId === activeId) ? clearError : null
+
+  // The per-agent Clear context button is in the agents side panel while the page's one
+  // notice sits above the transcript, so a refusal can land off-screen from the row clicked.
+  // Scoped to `clearError`: the channel notice had no scroll and must not acquire one here.
+  useEffect(() => {
+    if (!shownClearError) return
+    errorNoticeRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [shownClearError])
 
   // Load full channel (with messages) when switching
   useEffect(() => {
@@ -746,14 +858,30 @@ export default function ChannelPage() {
         risks nothing; the composer's own failure renders beside it instead.
         `apiError` falls back to the title when the backend sent no text, so
         the title is dropped rather than shown twice. */}
-    <ErrorNotice
-      title={error && error.message !== error.title ? error.title : undefined}
-      message={error?.message}
-      onDismiss={() => setError(null)}
-      askAgent
-      className="mb-2"
-      testId="channel-error"
-    />
+    <div>
+      <ErrorNotice
+        title={error && error.message !== error.title ? error.title : undefined}
+        message={error?.message}
+        onDismiss={() => setError(null)}
+        askAgent
+        className="mb-2"
+        testId="channel-error"
+      />
+      {/* No hand-off: a clear-context refusal can render above an unsent composer draft,
+        * and the hand-off unmounts this page and destroys it.
+        * Gated on the channel it belongs to: the switch effect runs before an in-flight
+        * request resolves, so A's refusal would otherwise land and read as live for B. */}
+      <div ref={errorNoticeRef}>
+        <ErrorNotice
+          title={shownClearError && shownClearError.message !== shownClearError.title ? shownClearError.title : undefined}
+          message={shownClearError?.message}
+          warn={shownClearError?.warn}
+          onDismiss={() => setClearError(null)}
+          className="mb-2"
+          testId="clear-context-error"
+        />
+      </div>
+    </div>
     <div className={`flex h-full relative ${isMobile ? '-mx-4 -mb-8' : ''}`}>
       {showNew && <NewChannelDialog onClose={() => setShowNew(false)} presets={presets} onCreate={handleCreateChannel} />}
 
@@ -792,10 +920,10 @@ export default function ChannelPage() {
               <Btn onClick={async () => {
                 if (!confirm(i18nT('pages.channelPage.this_will_reset_conversation_history_for_all_age'))) return
                 try {
-                  await api.channelClearContext(channel.id, 'all')
-                  const res = await api.channelGet(channel.id)
-                  setChannels(prev => prev.map(c => c.id === channel.id ? mapChannel(res) : c))
-                } catch (e) { fail('pages.channelPage.failed_to_clear_context', e) }
+                  const r = await api.channelClearContext(channel.id, 'all')
+                  noteClearRefusal(channel.id, r)
+                } catch (e) { failClearContext(channel.id, e); return }
+                await refreshAfterClear(channel.id)
               }} title={i18nT('pages.channelPage.clear_all_context')}>
                 <RotateCcw className="lucide-inline" /> {i18nT('pages.channelPage.clear_context_2')}
               </Btn>
@@ -889,10 +1017,10 @@ export default function ChannelPage() {
                       onClearContext={async () => {
                         if (!confirm(i18nT('pages.channelPage.reset_role_s_llm_session_the_channel_s_shared_me', { role: agent.role }))) return
                         try {
-                          await api.channelClearContext(channel.id, 'agent', agent.id)
-                          const res = await api.channelGet(channel.id)
-                          setChannels(prev => prev.map(c => c.id === channel.id ? mapChannel(res) : c))
-                        } catch (e) { fail('pages.channelPage.failed_to_clear_context', e) }
+                          const r = await api.channelClearContext(channel.id, 'agent', agent.id)
+                          noteClearRefusal(channel.id, r)
+                        } catch (e) { failClearContext(channel.id, e); return }
+                        await refreshAfterClear(channel.id)
                       }} />
                   ))}
                 </div>

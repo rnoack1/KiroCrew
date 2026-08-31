@@ -101,6 +101,12 @@ def _make_state(tmp_path, **kwargs):
     sessions = MagicMock(count=0)
     sessions.remove = AsyncMock()
     sessions.discard_conversation = AsyncMock()
+    # Async: it resolves a cleared project off-thread, so a plain MagicMock hands the
+    # handler a non-awaitable and every workspace-switch request answers 500.
+    sessions.note_project_change = AsyncMock()
+    # Resolve-only helper: async, and it must hand back a real path string because the arm
+    # sites record `slot.project or <this>`.
+    sessions.resolve_arm_cwd = AsyncMock(side_effect=lambda key, cwd: cwd or "/workspace/_default")
     sessions.aflush = AsyncMock()
     sessions.recycle_background = AsyncMock()
     sessions.get_pid = MagicMock(return_value=None)

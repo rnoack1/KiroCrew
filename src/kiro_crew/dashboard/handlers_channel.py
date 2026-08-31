@@ -558,6 +558,27 @@ async def api_channel_approve_agent(request: web.Request) -> web.Response:
 # ── Context Management ──
 
 
+async def _note_reset(state, agent, cleared: list, busy: list) -> None:
+    """Reset one member's session and record it as cleared or refused.
+
+    `reset` answers `session is not None`, so a False is ambiguous: refused because a
+    turn is in flight, or nothing was registered under the key at all. A member whose
+    session is fresh or expired holds a `session_key` with no live session, and counting
+    that as busy makes the endpoint answer `409 turn_in_flight` for a channel that has
+    nothing to clear. `has_session` is what separates the two, and a key with no session
+    already satisfies what the caller asked for, so it counts as cleared.
+    """
+    label = agent.role or agent.id
+    # `reset` keeps the persisted resume SID, so an idle or expired session reloads the
+    # very conversation this endpoint reports cleared. `discard_conversation` drops it.
+    if await state.sessions.discard_conversation(agent.session_key, skip_if_busy=True):
+        cleared.append(label)
+    elif state.sessions.has_session(agent.session_key):
+        busy.append(label)
+    else:
+        cleared.append(label)
+
+
 async def api_channel_clear_context(request: web.Request) -> web.Response:
     """Clear LLM context for one or all agents in a channel.
 
@@ -568,7 +589,10 @@ async def api_channel_clear_context(request: web.Request) -> web.Response:
 
     Scope semantics:
       * scope=all   — resets every agent's LLM session AND wipes the channel's
-                      shared message buffer + exchange counts. Persisted via _save().
+                      shared message buffer + exchange counts, but ONLY when every
+                      member was idle. A PARTIAL clear leaves the shared buffer
+                      intact, because a busy member keeps the LLM context that
+                      references it. Persisted via _save().
       * scope=agent — resets ONLY the named agent's LLM session. The channel's
                       shared message history and exchange counts are preserved,
                       so the cleared agent will still see prior messages on its
@@ -623,6 +647,9 @@ async def api_channel_clear_context(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid scope"}, status=400)
 
     cleared: list[str] = []
+    # A clear-context click is USER-COMMANDED, so a refused reset is reported rather than
+    # swallowed -- declining is right, but pretending it cleared is not.
+    busy: list[str] = []
 
     if scope == "agent":
         if not agent_id:
@@ -645,13 +672,39 @@ async def api_channel_clear_context(request: web.Request) -> web.Response:
             )
             return web.json_response({"error": "agent not found"}, status=404)
         if agent.session_key:
-            await state.sessions.reset(agent.session_key)
-            cleared.append(agent.role or agent.id)
+            await _note_reset(state, agent, cleared, busy)
     else:
         for agent in ch.members.values():
             if agent.session_key:
-                await state.sessions.reset(agent.session_key)
-                cleared.append(agent.role or agent.id)
+                await _note_reset(state, agent, cleared, busy)
+
+    # BEFORE the buffer wipe below: that is shared state `_save()` persists, so a 409
+    # answered after it destroys the log this response reports as untouched.
+    if busy and not cleared:
+        sel().log_api_access(
+            caller="dashboard",
+            operation="channel.clear_context",
+            outcome="denied",
+            source="dashboard",
+            resources=f"{ch.id}:{scope}:busy={','.join(busy)}",
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "context not cleared: "
+                    + ", ".join(busy)
+                    + " had a turn in flight. Nothing was cleared -- retry when idle."
+                ),
+                "code": "turn_in_flight",
+                "busy": busy,
+            },
+            status=409,
+        )
+
+    # Gated on a FULLY clean clear: the log is shared, and a busy member keeps the LLM
+    # context that references it, so wiping it here would strand that member's replies.
+    cleared_shared_log = scope != "agent" and not busy
+    if cleared_shared_log:
         ch.messages.clear()
         ch._msg_index.clear()
         ch.exchange_counts.clear()
@@ -665,15 +718,21 @@ async def api_channel_clear_context(request: web.Request) -> web.Response:
         resources=f"{ch.id}:{scope}:{','.join(cleared)}",
     )
 
-    # Notify other clients (multi-tab UX) so their stale message buffers refresh.
-    ch._broadcast(
-        "channel_context_cleared",
-        {
-            "channel_id": ch.id,
-            "scope": scope,
-            "agent_id": agent_id if scope == "agent" else None,
-            "cleared": cleared,
-        },
-    )
+    # Only when the shared log actually emptied. The listener REPLACES its retained transcript
+    # with an empty list, so announcing a partial clear wipes the log this request just kept.
+    if cleared_shared_log:
+        # Carries what the listener reads and nothing else: the gate above forces `scope` to
+        # "all", so a per-agent id, the cleared roles and the busy roles are all dead here.
+        ch._broadcast(
+            "channel_context_cleared",
+            {
+                "channel_id": ch.id,
+                "scope": scope,
+            },
+        )
 
-    return web.json_response({"ok": True, "cleared": cleared})
+    # A partial clear is distinguished by `ok`, not by the status: `busy` alone was read as a
+    # complete clear by every caller but the SPA, and the status stays 200 per the contract.
+    if busy:
+        return web.json_response({"ok": False, "cleared": cleared, "busy": busy}, status=200)
+    return web.json_response({"ok": True, "cleared": cleared, "busy": busy}, status=200)

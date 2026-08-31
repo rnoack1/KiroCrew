@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.acp.session_handle import WatchdogSettings
+from kiro_crew.config.paths import CWD_CLEARED
 
 
 @pytest.fixture(autouse=True)
@@ -426,6 +427,27 @@ class TestGetOrCreatePoolIntegration:
         # Factory called for cold start, cwd forwarded
         factory.assert_called_once()
         assert factory.call_args.kwargs.get("cwd") == "/Users/alice/workspace/proj"
+
+    @pytest.mark.asyncio
+    async def test_explicit_clear_skips_pool_while_no_preference_still_claims(self):
+        """An explicitly CLEARED project cold-starts; ``cwd=None`` still reaches the pool.
+
+        ``cwd`` is side-dependent and both spellings are falsy. ``None`` states no
+        preference, so the pool's shared binding is fine, but CWD_CLEARED says the project
+        was cleared and the factory will bind ``session_default_cwd(key)`` -- a per-session
+        directory no shared pooled child is sitting in. Folding the two together let a
+        cleared turn claim a warm provider rooted in the pool's workspace, so its relative
+        writes landed there. The second half is the positive control: a guard that bypassed
+        the pool for every caller would satisfy the first assertion on its own.
+        """
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+
+        await mgr.get_or_create("cleared-key", agent="kirocrew", cwd=CWD_CLEARED)
+        mgr._drain_and_claim.assert_not_awaited()
+
+        await mgr.get_or_create("no-pref-key", agent="kirocrew")
+        mgr._drain_and_claim.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_claims_pool_with_model_override_and_switches(self):

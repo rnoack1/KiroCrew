@@ -9027,7 +9027,7 @@
       "reply_2_many": "{{count}} risposte",
       "reply_2_one": "{{count}} risposta",
       "reply_2_other": "{{count}} risposte",
-      "reset_role_s_llm_session_the_channel_s_shared_me": "Reimposta la sessione LLM di {{role}}. La cronologia dei messaggi condivisa del canale viene conservata.",
+      "reset_role_s_llm_session_the_channel_s_shared_me": "Reimposta la sessione LLM di {{role}}. La cronologia dei messaggi condivisa del canale viene conservata. Se è ancora al lavoro, non viene cancellato nulla.",
       "role": "Ruolo",
       "role_e_g_logs_agent": "Ruolo (ad es. agente dei log)",
       "running_tool": "esecuzione dello strumento…",
@@ -9042,7 +9042,7 @@
       "task": "Attività",
       "task_e_g_search_cloudwatch_logs": "Attività (ad es. cerca nei log di CloudWatch)",
       "team_preset": "Preimpostazione del team",
-      "this_will_reset_conversation_history_for_all_age": "Questa operazione reimposterà la cronologia delle conversazioni per tutti gli agenti. Le configurazioni vengono conservate.",
+      "this_will_reset_conversation_history_for_all_age": "Questa operazione reimposterà la cronologia delle conversazioni per tutti gli agenti. Le configurazioni vengono conservate. Gli agenti ancora al lavoro mantengono la loro cronologia.",
       "thread": "Thread",
       "topic": "Argomento",
       "failed_to_load_channels": "Caricamento dei canali non riuscito",
@@ -9052,7 +9052,10 @@
       "failed_to_dismiss_agent": "Rimozione dell'agente non riuscita",
       "failed_to_update_agent": "Aggiornamento dell'agente non riuscito",
       "failed_to_close_channel": "Chiusura del canale non riuscita",
-      "failed_to_clear_context": "Cancellazione del contesto non riuscita"
+      "failed_to_clear_context": "Cancellazione del contesto non riuscita",
+      "clear_context_busy_error": "Contesto mantenuto per {{roles}}: ancora in corso. Cancella di nuovo quando hanno finito.",
+      "clear_context_cleared_roles": "Cancellato per {{roles}}.",
+      "clear_context_partially_cleared": "Contesto parzialmente cancellato"
     },
     "chat": {
       "activityViewer": {

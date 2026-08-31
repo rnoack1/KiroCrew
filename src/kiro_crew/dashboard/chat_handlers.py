@@ -37,6 +37,7 @@ from kiro_crew.config.loader import (
     published_autocompact_pct,
     resolve_agent_bindings,
 )
+from kiro_crew.config.paths import CWD_CLEARED, resolved_cwd
 from kiro_crew.dashboard import remote_mirror
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed
 from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
@@ -5663,6 +5664,12 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # (the websocket rebroadcast corrects it only when the socket is up,
         # which is exactly when the optimistic write is load-bearing).
         workspace = slot.workspace or "default"
+        # Initialised outside the try: on a resolution failure the arm falls back to the
+        # requested alias, so both sides degrade to the same stable identity.
+        default_alias: str = ""
+        # Bound BEFORE the try: the rollback closure below reads it, and a load failure
+        # here would otherwise leave it unbound for that reader.
+        cfg: KiroCrewConfig | None = None
         try:
             cfg = KiroCrewConfig.load()
             if agent_name:
@@ -5695,8 +5702,34 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                 )
                 if not is_project_agent:
                     new_project = default_project_dir(workspace)
+            else:
+                # An EMPTY selection runs config.default_agent. The arm names that ALIAS,
+                # not its target, so a re-point during the window is picked up at consume.
+                default_alias = cfg.default_agent or ""
         except Exception:
             logger.warning("Failed to resolve agent bindings for %r", agent_name, exc_info=True)
+
+        # The arm's fallback for an EMPTY project. Resolves the CLEARED per-session default
+        # and never a project -- see docs/system-specs/modules/session.md.
+        # UNCONDITIONAL: `slot.project` has unlocked writers, so a clear landing during the
+        # awaits above would hand `""` to the SYNCHRONOUS arm below. See the session spec.
+        try:
+            cleared_arm_cwd = await state.sessions.resolve_arm_cwd(session_key, CWD_CLEARED)
+        except Exception:
+            logger.warning(
+                "Failed to resolve the default workspace for slot %s", name, exc_info=True
+            )
+            # The agent committed above this point, so the failure unwinds it or the slot
+            # is left switched with nothing armed -- identity-gated, like the rollback.
+            if slot.agent is committed_agent:
+                slot.agent = prior_agent
+            return web.json_response(
+                {
+                    "error": "the configured workspace directory is unavailable",
+                    "code": "workspace_unavailable",
+                },
+                status=503,
+            )
 
         # Derived fields commit BEFORE the reset too, compare-and-set against
         # the pre-await baseline: a send landing during the reset teardown
@@ -5718,6 +5751,28 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             slot.project = _CommitToken(new_project)
             committed_project = slot.project
 
+        def _follow_rebind(armed_cwd: str) -> None:
+            """Move the arm onto the key the slot runs on NOW, if it rebound.
+
+            The claim gate is per-key with no cross-key fallback, so an arm left on the
+            abandoned key guards nothing while the live key accepts the agent and project
+            this request refused. Synchronous, and a no-op when the key did not move.
+            """
+            live_key = effective_session_key(slot)
+            if live_key != session_key:
+                state.sessions.transfer_retire_arm(session_key, live_key, armed_cwd)
+
+        # Raised at the PRODUCER, synchronously: the consumer runs behind the eager
+        # task's debounce, and a channel turn in that window states no cwd.
+        # The ALIAS, not the resolved target: a config re-point during the arm window
+        # would otherwise feed the retry a frozen agent. Resolution happens at consume.
+        state.sessions.mark_retire_on_next_claim(
+            session_key,
+            slot.project or cleared_arm_cwd,
+            agent=agent_name or default_alias or "kirocrew",
+        )
+        _follow_rebind(slot.project or cleared_arm_cwd)
+
         # Reset session so the next message uses the new agent.
         logger.info(
             "Slot %s agent switched to %r, resetting session", name, agent_name or "kirocrew"
@@ -5737,12 +5792,24 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             this commit's; a field this request never committed (the
             write-side CAS lost) has a None token and is never touched.
             """
-            if slot.agent is committed_agent:
+            restored_agent = slot.agent is committed_agent
+            if restored_agent:
                 slot.agent = prior_agent
             if committed_workspace is not None and slot.workspace is committed_workspace:
                 slot.workspace = pre_await_workspace
             if committed_project is not None and slot.project is committed_project:
                 slot.project = pre_await_project
+            # Re-point the arm raised before the awaits, on the binding the slot holds
+            # AFTER the unwind -- see docs/system-specs/modules/session.md. The ALIAS the
+            # slot ends on, never its resolved target: resolution belongs at consume.
+            state.sessions.mark_retire_on_next_claim(
+                session_key,
+                slot.project or cleared_arm_cwd,
+                agent=(prior_agent if restored_agent else slot.agent) or "kirocrew",
+            )
+            # `session_key` was read before the awaits and `linked_session_key` is assigned
+            # outside `slot._lock`, so a rebind since then left this arm on a dead key.
+            _follow_rebind(slot.project or cleared_arm_cwd)
 
         # Last-instant re-probe in a NO-AWAIT window before the teardown (the
         # model template's rule at its own reset site): the pre-commit check
@@ -7439,8 +7506,42 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
             )
         prior_workspace = slot.workspace
         prior_project = slot.project
-        slot.workspace = ws_name
-        slot.project = default_project_dir(ws_name)
+        new_project = default_project_dir(ws_name)
+        # The resolve runs FIRST: it is the step that can raise on an unavailable workspace
+        # root, and recording ahead of it left the rejected project armed behind the 503.
+        try:
+            cleared_arm_cwd = await state.sessions.resolve_arm_cwd(session_key, CWD_CLEARED)
+            await state.sessions.note_project_change(session_key, new_project or CWD_CLEARED)
+        except Exception:
+            logger.warning("Failed to record the workspace change for slot %s", name, exc_info=True)
+            return web.json_response(
+                {
+                    "error": "the configured workspace directory is unavailable",
+                    "code": "workspace_unavailable",
+                },
+                status=503,
+            )
+        slot.workspace = _CommitToken(ws_name)
+        committed_workspace = slot.workspace
+        # Compare-and-set: `slot.project` has unlocked writers (the in-turn set_project
+        # directive among them) and the awaits above give them a window to land in.
+        committed_project: str | None = None
+        if slot.project == prior_project:
+            slot.project = _CommitToken(new_project)
+            committed_project = slot.project
+        else:
+            # A writer won it. Keep THEIR project and re-point the arm, which still names the
+            # one this request would have committed. Non-empty, so this cannot raise.
+            await state.sessions.note_project_change(session_key, slot.project or cleared_arm_cwd)
+
+        def _unwind_switch() -> None:
+            # Restores only the fields still OURS: an unconditional restore would erase a
+            # writer that landed during the awaits, the same defect as the commit above.
+            if slot.workspace is committed_workspace:
+                slot.workspace = prior_workspace
+            if committed_project is not None and slot.project is committed_project:
+                slot.project = prior_project
+
         logger.info("Slot %s workspace switched to %r, resetting session", name, ws_name)
         # skip_if_busy: the total_messages guard above is checked before this
         # await, and message dispatch does not take slot._lock — a first send
@@ -7483,7 +7584,12 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
                 # rolling back would advertise the old workspace while the
                 # live process runs the new one. Success without teardown is
                 # the truthful answer.
-                live_serves_target = busy_provider.cwd == slot.project
+                # provider.cwd is REPORTED, so Path-normalized; slot.project is raw.
+                # An EMPTY project resolves the per-session default, which mkdirs and realpaths
+                # the workspace root -- synchronous work this reuses off-thread instead.
+                live_serves_target = resolved_cwd(busy_provider.cwd, session_key) == resolved_cwd(
+                    slot.project or cleared_arm_cwd, session_key
+                )
                 if live_serves_target:
                     logger.info(
                         "Slot %s workspace switch: live session already runs under %r; "
@@ -7496,8 +7602,12 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
                     # Roll back the commit (commit-before-reset means the new
                     # pair is already visible) and answer the same 409 the
                     # guard gives.
-                    slot.workspace = prior_workspace
-                    slot.project = prior_project
+                    _unwind_switch()
+                    # The switch is REJECTED: an arm still naming the rejected project would
+                    # send the next claim there, so re-point it at what we rolled back to.
+                    await state.sessions.note_project_change(
+                        session_key, slot.project or cleared_arm_cwd
+                    )
                     return web.json_response(
                         {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
                     )
@@ -7514,8 +7624,12 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
                     # guard below.
                     teardown_incomplete = True
                 elif not reset_ok:
-                    slot.workspace = prior_workspace
-                    slot.project = prior_project
+                    _unwind_switch()
+                    # The switch is REJECTED: an arm still naming the rejected project would
+                    # send the next claim there, so re-point it at what we rolled back to.
+                    await state.sessions.note_project_change(
+                        session_key, slot.project or cleared_arm_cwd
+                    )
                     return web.json_response(
                         {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
                     )
@@ -7527,8 +7641,10 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
             # committed bindings would describe a session that never saw the
             # switch. Roll back and answer 409; the retry resolves the
             # current binding.
-            slot.workspace = prior_workspace
-            slot.project = prior_project
+            _unwind_switch()
+            # The switch is REJECTED: an arm still naming the rejected project would
+            # send the next claim there, so re-point it at what we rolled back to.
+            await state.sessions.note_project_change(session_key, slot.project or cleared_arm_cwd)
             return web.json_response(
                 {"error": "slot session was rebound during the switch", "code": "session_rebound"},
                 status=409,
@@ -7661,6 +7777,27 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         # from inside the kiro-cli process group (the set_project MCP tool); an
         # inline reset would killpg() the caller. Consumed in chat_runner.
         if project != old_project:
+            # Resolved off-thread, and only on the branch that actually arms: a cleared
+            # project arms the per-session default, which mkdirs and realpaths the root.
+            try:
+                cleared_arm_cwd = await state.sessions.resolve_arm_cwd(
+                    session_key, project or CWD_CLEARED
+                )
+            except Exception:
+                # The commit already landed: raising here would leave the slot on the new
+                # project unarmed, so the next cwd-less claim reuses the old session.
+                logger.warning(
+                    "Failed to resolve the default workspace for slot %s", name, exc_info=True
+                )
+                if slot.project is committed_project:
+                    slot.project = old_project
+                return web.json_response(
+                    {
+                        "error": "the default workspace could not be resolved",
+                        "code": "workspace_unavailable",
+                    },
+                    status=503,
+                )
             if effective_session_key(slot) != session_key:
                 # The slot was bound to a different session while the
                 # recent-project save awaited: arming the flag with the key
@@ -7684,6 +7821,9 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                     status=409,
                 )
             slot._pending_reset_history_key = session_key
+            # Arm HERE for the same reason: the consumer runs behind the debounce and
+            # a channel turn in that window states no cwd, so this is its only guard.
+            state.sessions.mark_retire_on_next_claim(session_key, project or cleared_arm_cwd)
             # Speculatively re-create the session rooted at the new project so the
             # cwd change is paid during think-time. The eager task consumes the
             # deferred reset itself, but only when no turn is running — the

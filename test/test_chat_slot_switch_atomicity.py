@@ -13,11 +13,13 @@ the mid-turn 409 (clones of the concurrency template in
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from chat_test_helpers import _make_state
 
 from kiro_crew.dashboard.chat import (
     api_chat_slot_agent,
@@ -58,6 +60,10 @@ def _make_app(state: DashboardState) -> web.Application:
     return app
 
 
+def _boom_cfg():
+    raise RuntimeError("config unreadable")
+
+
 def _mock_state(slot: _ChatSlot, provider: object = None) -> DashboardState:
     state = MagicMock(spec=DashboardState)
     state._slots = {slot.key: slot}
@@ -65,6 +71,14 @@ def _mock_state(slot: _ChatSlot, provider: object = None) -> DashboardState:
     state.broadcast_context_usage = MagicMock()
     state.sessions = MagicMock()
     state.sessions.reset = AsyncMock()
+    # Async because it resolves a cleared project off-thread; a plain MagicMock returns a
+    # non-awaitable here and the handler answers 500 instead of exercising the switch.
+    state.sessions.note_project_change = AsyncMock()
+    # Resolve-only helper: async, and it must hand back a real path string because the arm
+    # sites record `slot.project or <this>`.
+    state.sessions.resolve_arm_cwd = AsyncMock(
+        side_effect=lambda key, cwd: cwd or "/workspace/_default"
+    )
     # No live AcpProvider by default → the model handler takes the reset path.
     state.sessions.get_provider = MagicMock(return_value=provider)
     return state
@@ -756,6 +770,184 @@ class TestSlotWorkspaceSwitchAtomicity:
             assert state.sessions.reset.await_args.kwargs == {"skip_if_busy": True}
 
     @pytest.mark.asyncio
+    async def test_a_failed_resolution_leaves_no_project_armed(self):
+        """Nothing may be armed by a switch that answers 503.
+
+        The recording ran BEFORE the resolution that can raise, so an unavailable workspace root
+        left the arm naming the project this request then refused to commit -- and the next claim
+        followed it into the rejected workspace. The resolve goes first, so a failure arms nothing.
+        """
+        slot = _ChatSlot("test")
+        slot.workspace = "old-ws"
+        slot.project = "/workspace/old-ws"
+        state = _mock_state(slot, provider=None)
+        state.sessions.resolve_arm_cwd = AsyncMock(side_effect=OSError("root unreadable"))
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.conversation_log = MagicMock()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/workspace", json={"workspace": "new-ws"})
+            assert resp.status == 503
+            state.sessions.note_project_change.assert_not_awaited()
+            assert slot.workspace == "old-ws"
+
+    @pytest.mark.asyncio
+    async def test_minting_a_slot_supersedes_a_previous_occupants_arm(self, tmp_path):
+        """The supersede must be wired to slot CREATION, not just available on the manager.
+
+        Closing a tab runs ``remove``, which preserves the arm on purpose, so the arm outlives
+        the slot. Nothing else can then drop it: the next occupant of that name is a different
+        slot, and an arm naming the old project silently redirects its relative writes. Reuse
+        of a live slot returns earlier, which keeps the retry target ``remove`` preserves it
+        for.
+        """
+        state = _make_state(tmp_path / "sessions")
+        superseded: list[str] = []
+        state.sessions.supersede_arm_for_new_slot = lambda key: superseded.append(key)
+
+        first = state.get_or_create_slot("chat-9")
+        assert superseded == ["dashboard:chat-9"], (
+            "minting a slot did not supersede the key's arm, so a previous occupant's "
+            f"armed project survives into it; calls seen: {superseded}"
+        )
+
+        superseded.clear()
+        again = state.get_or_create_slot("chat-9")
+        assert again is first
+        assert superseded == [], (
+            "reusing a live slot must NOT drop the arm -- it is still owed to a start the "
+            "cleanup evicted, whose own frame carries only the pre-change directory"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_project_written_during_the_awaits_is_not_erased(self):
+        """The commit must not overwrite a project another writer chose mid-await.
+
+        The arm recording and its cleared-default resolution both run BEFORE the fields
+        commit, and `slot.project` has unlocked writers -- the in-turn `_set_project`
+        directive among them. An unconditional assignment after those awaits therefore
+        discards the project the user selected during the window, with nothing to signal it.
+        The commit is compare-and-set, and when it loses the arm is re-pointed at the value
+        that survived so the next claim binds what the slot actually carries.
+        """
+        slot = _ChatSlot("test")
+        slot.workspace = "old-ws"
+        slot.project = "/workspace/old-ws"
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.conversation_log = MagicMock()
+
+        async def _writer_lands_mid_await(key, cwd):
+            # Stands in for the unlocked in-turn writer landing inside this await window.
+            slot.project = "/writer/chose-this"
+            return cwd or "/workspace/_default"
+
+        state.sessions.resolve_arm_cwd = AsyncMock(side_effect=_writer_lands_mid_await)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/workspace", json={"workspace": "new-ws"})
+            assert resp.status == 200
+            assert slot.project == "/writer/chose-this", (
+                "the switch overwrote a project written during its own await window; the "
+                f"user's selection is gone with nothing to signal it; got {slot.project!r}"
+            )
+            armed = [c.args[1] for c in state.sessions.note_project_change.await_args_list]
+            assert armed[-1] == "/writer/chose-this", (
+                "when the compare-and-set loses, the arm must be re-pointed at the project "
+                f"that survived, or the next claim binds a directory the slot left; got {armed}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_switch_does_not_erase_a_project_written_mid_await(self):
+        """The ROLLBACK must not clobber the writer either -- same class as the commit.
+
+        A compare-and-set commit that loses leaves the slot carrying the writer's project,
+        so restoring `prior_project` on the refusal path erases exactly what the CAS just
+        protected. Both fields unwind only while this request still owns them.
+        """
+        from kiro_crew.providers.base import LLMProvider
+
+        slot = _ChatSlot("test")
+        slot.workspace = "old-ws"
+        slot.project = "/workspace/old-ws"
+        busy = MagicMock(spec=LLMProvider)
+        busy.has_active_turn.return_value = True
+        state = _mock_state(slot, provider=busy)
+        state.sessions.reset = AsyncMock(return_value=False)
+        state.conversation_log = MagicMock()
+
+        async def _writer_lands_mid_await(key, cwd):
+            slot.project = "/writer/chose-this"
+            return cwd or "/workspace/_default"
+
+        state.sessions.resolve_arm_cwd = AsyncMock(side_effect=_writer_lands_mid_await)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/workspace", json={"workspace": "new-ws"})
+            assert resp.status == 409
+            assert slot.project == "/writer/chose-this", (
+                "the refusal rolled back over a project this request never committed; got "
+                f"{slot.project!r}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_switch_repoints_the_arm_with_an_already_resolved_path(self):
+        """The rollback must not be the thing that resolves a cleared directory.
+
+        With an EMPTY prior project the re-point passed the cleared sentinel, and the recorder
+        resolves that off-thread through the workspace root's stat/realpath -- which raises on
+        an unavailable root. On a rollback path that raise escapes as a 500 AFTER the slot
+        fields were restored, while the retirement arm still names the REJECTED project, so the
+        next claim binds the workspace this request just refused. Resolving in the guarded
+        pre-commit window instead means every rollback re-points with a concrete directory.
+        """
+        from kiro_crew.providers.base import LLMProvider
+
+        slot = _ChatSlot("test")
+        slot.workspace = "old-ws"
+        # The cleared case: this is what made the rollback resolve, and re-raise, on the
+        # one path that cannot afford to.
+        slot.project = ""
+        busy = MagicMock(spec=LLMProvider)
+        busy.has_active_turn.return_value = True
+        state = _mock_state(slot, provider=busy)
+        state.sessions.reset = AsyncMock(return_value=False)
+        state.conversation_log = MagicMock()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/workspace", json={"workspace": "new-ws"})
+            data = await resp.json()
+            assert resp.status == 409
+            assert data["code"] == "turn_in_flight"
+            assert slot.workspace == "old-ws"
+            repointed = state.sessions.note_project_change.await_args_list[-1].args[1]
+            assert repointed == "/workspace/_default", (
+                "the rollback must re-point with a directory already resolved before the "
+                f"commit; passing the cleared sentinel resolves on this path and can raise a "
+                f"500 with the rejected project still armed; got {repointed!r}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_arm_record_leaves_the_workspace_switch_uncommitted(self):
+        """The record can raise, so it must run BEFORE the fields move, not after.
+
+        `note_project_change` resolves a cleared default through `workspace_root()`, whose mkdir
+        raises on an unavailable root. Recording after the commit turned that into a 500 with the
+        new workspace already on the slot -- a half-applied switch the caller cannot see or undo.
+        Ordering the record first makes the failure a clean, retryable 503.
+        """
+        slot = _ChatSlot("test")
+        slot.workspace = "old-ws"
+        slot.project = "/workspace/old-ws"
+        state = _mock_state(slot, provider=None)
+        state.sessions.note_project_change = AsyncMock(side_effect=OSError("root unreadable"))
+        state.sessions.reset = AsyncMock(return_value=True)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/workspace", json={"workspace": "new-ws"})
+            data = await resp.json()
+            assert resp.status == 503
+            assert data["code"] == "workspace_unavailable"
+            assert slot.workspace == "old-ws"
+            assert slot.project == "/workspace/old-ws"
+            state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_reset_declined_idle_session_retries_once(self):
         # An idle live session declined the first reset (a slipped-in first
         # send finished before the re-read): the handler retries once and
@@ -1241,6 +1433,277 @@ class TestLinkedSlotSessionKey:
             assert meta_call.args[0] == "dashboard:test"
 
     @pytest.mark.asyncio
+    async def test_agent_switch_arms_the_project_that_survives_the_switch(self, monkeypatch):
+        """A project that survives the switch is what the arm carries, not the default.
+
+        The fallback is resolved unconditionally (an unlocked concurrent clear can empty
+        `slot.project` after any gate on the candidate projects), so the resolve happening is
+        not the question -- what matters is that the arm still prefers the live project and
+        never records a directory the slot is not on.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", _boom_cfg)
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        slot.project = "/Users/alice/proj"
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.conversation_log = MagicMock()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
+            assert resp.status == 200
+            assert state.sessions.mark_retire_on_next_claim.call_args.args[1] == "/Users/alice/proj"
+
+    @pytest.mark.asyncio
+    async def test_a_rebind_during_the_switch_moves_the_arm_to_the_live_key(self, monkeypatch):
+        """The arm must guard the key the slot ENDS on, not the one captured before the awaits.
+
+        `session_key` is read once before the resolve/reset awaits, and `linked_session_key` is
+        assigned outside `slot._lock`, so a channel link landing mid-transaction leaves the arm
+        on an abandoned key. The claim gate is per-key with no cross-key fallback, so the live
+        key is then unguarded and the channel reuses the temporary agent and CWD -- writing in
+        the project this request refused.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", _boom_cfg)
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        slot.project = "/Users/alice/proj"
+        from kiro_crew.providers.base import LLMProvider
+
+        busy = MagicMock(spec=LLMProvider)
+        # Idle at the pre-commit probe so the switch reaches the arm, busy at the re-probe
+        # after the awaits so the rollback -- the path that arms the stale key -- runs.
+        busy.has_active_turn.side_effect = [False, True] + [True] * 8
+        state = _mock_state(slot, provider=busy)
+        state.conversation_log = MagicMock()
+        state.sessions.reset = AsyncMock(return_value=True)
+
+        async def _rebind_then_resolve(
+            key, cwd
+        ):  # A channel link landing during the resolve await, the way cron_inject does.
+            slot.linked_session_key = "slack:999.111"
+            return cwd or "/workspace/_default"
+
+        state.sessions.resolve_arm_cwd = AsyncMock(side_effect=_rebind_then_resolve)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
+            assert resp.status == 409
+        moved = state.sessions.transfer_retire_arm.call_args
+        assert moved is not None, (
+            "the arm was never re-pointed after the rebind, so it still guards the abandoned "
+            "key while the live one accepts the refused agent and project"
+        )
+        assert moved.args[0] == "dashboard:test"
+        assert (
+            moved.args[1] == "slack:999.111"
+        ), f"the arm must move to the key the slot now runs on; moved to {moved.args[1]!r}"
+
+    @pytest.mark.asyncio
+    async def test_the_identity_arm_records_the_alias_not_a_resolved_snapshot(self, monkeypatch):
+        """The arm must name the ALIAS, whose target is resolved fresh at every consume.
+
+        `slot.agent` is an alias and the config maps it to a runtime agent. Recording the
+        RESOLVED target freezes that mapping for the arm's whole lifetime, so an alias
+        re-pointed by a config edit during the window feeds the retirement retry the OLD
+        target -- and the retry then replaces a correctly-resolved session with one running
+        the wrong agent. Naming the alias keeps the arm stable and defers resolution.
+        """
+        resolved = SimpleNamespace(
+            workspace="ws", memory_store="ms", kiro_agent="old-runtime-target"
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
+            lambda cfg, name=None, project=None: resolved,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", lambda: MagicMock()
+        )
+        slot = _ChatSlot("test")
+        slot.agent = "old-alias"
+        slot.project = "/Users/alice/proj"
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.conversation_log = MagicMock()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-alias"})
+            assert resp.status == 200
+        armed = state.sessions.mark_retire_on_next_claim.call_args.kwargs["agent"]
+        assert armed == "new-alias", (
+            "the arm froze a resolved target instead of the alias; a config re-point during "
+            f"the arm window then hands the retry a stale agent. armed={armed!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_agent_switch_answers_503_when_the_workspace_is_unavailable(self, monkeypatch):
+        """A cleared slot whose default root cannot be resolved gets a controlled error.
+
+        The resolution is the only filesystem work on this path and it is reached before
+        the commit, so a raise must answer a retryable 503 rather than escape as a 500 --
+        and the slot must be left exactly as the request found it.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", _boom_cfg)
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        state = _mock_state(slot, provider=None)
+        state.sessions.resolve_arm_cwd = AsyncMock(side_effect=OSError("root unreadable"))
+        state.conversation_log = MagicMock()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
+            data = await resp.json()
+            assert resp.status == 503
+            assert data["code"] == "workspace_unavailable"
+            assert slot.agent == "old-agent"
+            state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_empty_agent_selection_arms_the_defaults_alias(self, monkeypatch):
+        """An empty selection runs the DEFAULT agent, so the arm must name THAT alias.
+
+        The arm degraded to a literal here, which the correctly-resolved claim never matches,
+        so the retry re-pointed onto the literal and ran an identity the user never chose.
+        Any client can send an empty selection and the regex gate lets it through. The arm
+        names the default ALIAS rather than its resolved target, because a target frozen at
+        arm time survives a config re-point and feeds the retry the old agent.
+        """
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load",
+            MagicMock(return_value=MagicMock(agents={}, default_agent="house-default")),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
+            MagicMock(return_value=SimpleNamespace(kiro_agent="claude-code", workspace_dir=None)),
+        )
+        slot = _ChatSlot("test")
+        slot.agent = ""
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.conversation_log = MagicMock()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/agent", json={"agent": ""})
+            assert resp.status == 200
+            armed_agent = state.sessions.mark_retire_on_next_claim.call_args.kwargs["agent"]
+            assert armed_agent == "house-default", (
+                "an empty selection must arm the DEFAULT agent's ALIAS; a literal fallback is "
+                f"the mismatch that refuses the real claim, and a resolved target freezes the "
+                f"mapping the retry then re-points onto; got {armed_agent!r}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_agent_switch_still_arms_the_resolved_default_when_cleared(self, monkeypatch):
+        """Positive control for the two tests above.
+
+        A guard that skipped every resolution, or refused them all, would pass those two
+        and silently arm an empty target -- which is the stale-binding class the arm exists
+        to remove. A cleared slot must still resolve, and arm the resolved directory.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", _boom_cfg)
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.conversation_log = MagicMock()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
+            assert resp.status == 200
+            state.sessions.resolve_arm_cwd.assert_awaited()
+            armed = state.sessions.mark_retire_on_next_claim.call_args.args[1]
+            assert armed == "/workspace/_default"
+
+    @pytest.mark.asyncio
+    async def test_agent_switch_never_arms_the_project_it_just_left(self, monkeypatch):
+        """A workspace with NO default project must not arm the OLD directory.
+
+        ``default_project_dir`` answers "" when the workspace directory is missing or
+        sensitive, so the committed post-switch project is legitimately empty. The arm's
+        fallback then decides what the next cwd-less claim binds, and resolving it from the
+        PRE-switch project made that the directory being abandoned -- a silent bind to the
+        old repository, with relative writes landing there and nothing to recover from.
+        The correct fallback for an empty project is the CLEARED per-session default.
+        """
+        cfg = MagicMock()
+        cfg.agents = {"new-agent": MagicMock()}
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", lambda: cfg)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.warm_project_agent_names", AsyncMock()
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
+            lambda *a, **kw: SimpleNamespace(kiro_agent="ka", workspace_dir="/ws/empty"),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._workspace_name_for_dir", lambda *a: "empty-ws"
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.cached_project_agent_names", lambda *a: frozenset()
+        )
+        # The workspace has no default project: this is the condition under test.
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.default_project_dir", lambda *a: "")
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        slot.project = "/Users/alice/OLD-project"
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.conversation_log = MagicMock()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
+            assert resp.status == 200
+            armed = state.sessions.mark_retire_on_next_claim.call_args.args[1]
+            assert armed != "/Users/alice/OLD-project"
+            assert armed == "/workspace/_default"
+
+    @pytest.mark.asyncio
+    async def test_a_concurrent_clear_during_the_awaits_still_arms_a_resolved_path(
+        self, monkeypatch
+    ):
+        """An unlocked clear landing mid-request must not hand `""` to the SYNCHRONOUS arm.
+
+        `slot.project` has writers that take no lock -- the in-turn set_project directive sets
+        it to `""` -- so a clear can land during this handler's resolution awaits. The arm reads
+        `slot.project or <fallback>` and runs synchronously inside the commit window, so an
+        unresolved fallback means `mark_retire_on_next_claim` receives the empty string and
+        resolves it itself: a mkdir and realpath of the workspace root, on the event loop, which
+        that method's own contract forbids. Gating the resolve on the two candidate projects
+        could not see this write, so the resolve is unconditional.
+        """
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        slot.project = "/Users/alice/proj"
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.conversation_log = MagicMock()
+
+        async def _clear_mid_flight(*_a, **_kw):
+            slot.project = ""
+
+        cfg = MagicMock()
+        cfg.agents = {"new-agent": MagicMock()}
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", lambda: cfg)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
+            lambda *a, **kw: SimpleNamespace(kiro_agent="ka", workspace_dir="/ws/x"),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._workspace_name_for_dir", lambda *a: "ws-x"
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.cached_project_agent_names", lambda *a: frozenset()
+        )
+        # A real post-switch project, so the fallback is reached ONLY because the concurrent
+        # clear made the commit's compare-and-set lose and left `slot.project` empty.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.default_project_dir", lambda *a: "/ws/x/proj"
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.warm_project_agent_names", _clear_mid_flight
+        )
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
+            assert resp.status == 200
+            assert slot.project == "", "precondition: the concurrent clear must have survived"
+            armed = state.sessions.mark_retire_on_next_claim.call_args.args[1]
+            assert armed == "/workspace/_default"
+            assert armed != ""
+
+    @pytest.mark.asyncio
     async def test_agent_switch_sees_the_linked_sessions_active_turn(self):
         # The busy probe lands on the live linked session: an in-flight
         # channel turn answers 409 instead of tearing the turn (or a
@@ -1278,6 +1741,9 @@ class TestLinkedSlotSessionKey:
             assert resp.status == 404
             assert slot.agent == "old-agent"
             state.sessions.reset.assert_not_awaited()
+            # The cleared-project resolution mkdirs and realpaths the workspace root, so
+            # an unauthorized caller must reach no filesystem work en route to its 404.
+            state.sessions.resolve_arm_cwd.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_rebind_during_reset_rolls_back_the_agent_switch(self, monkeypatch):
@@ -1535,6 +2001,75 @@ class TestLinkedSlotSessionKey:
             assert data["code"] == "session_rebound"
             # The concurrent writer's value survives; only OUR commit unwinds.
             assert slot.agent == "new-agent"
+
+    @pytest.mark.asyncio
+    async def test_the_rollback_arms_the_preserved_agent_not_the_prior_one(self, monkeypatch):
+        """A preserved concurrent write owns the slot, so the arm must name ITS identity.
+
+        The rollback stands down on token identity, so an unlocked writer's agent
+        survives this request's unwind -- and the rollback path is reached precisely
+        BECAUSE a turn is in flight, which is exactly when an in-turn ``/agent``
+        directive lands. The arm raised before the awaits still names the abandoned
+        switch, so it must be re-pointed; re-pointing it at the PRIOR agent arms an
+        identity the slot no longer holds, so the next cwd-less claim is refused for
+        the wrong agent and the retry re-points the session to an agent nobody
+        selected. The registration matches on ``kiro_agent or slot.agent``, so the
+        armed value has to be the preserved agent's RESOLVED target.
+        """
+        mock_cfg = MagicMock()
+        mock_cfg.agents = {}
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", lambda: mock_cfg
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.warm_project_agent_names", AsyncMock()
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.cached_project_agent_names",
+            lambda p: frozenset(),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._workspace_name_for_dir",
+            lambda cfg, ws_dir: "ws1",
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.default_project_dir",
+            lambda ws: None,
+        )
+        targets = {
+            "old-agent": "old-target",
+            "hijack-agent": "hijack-target",
+            "new-agent": "new-target",
+        }
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
+            lambda cfg, name, project_dir=None: MagicMock(
+                kiro_agent=targets.get(str(name)), workspace_dir="/tmp/ws1"
+            ),
+        )
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        state = _mock_state(slot, provider=None)
+        state.conversation_log = MagicMock()
+
+        async def _hijack_then_rebind(*_a, **_k):
+            # A DIFFERENT agent, so the rollback PRESERVES it instead of restoring.
+            slot.agent = "hijack-agent"
+            slot.linked_session_key = "cron:job-1"
+            return True
+
+        state.sessions.reset = AsyncMock(side_effect=_hijack_then_rebind)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
+            assert resp.status == 409
+        assert slot.agent == "hijack-agent"
+        armed = list(state.sessions.mark_retire_on_next_claim.call_args_list)
+        assert armed, "the rollback must re-point the arm it raised before the awaits"
+        got = armed[-1].kwargs.get("agent")
+        assert got == "hijack-agent", (
+            "the arm must name the PRESERVED agent's ALIAS, not the prior agent and not a "
+            f"resolved target frozen at arm time -- got {got!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_concurrent_same_project_write_survives_the_rollback(self, monkeypatch):

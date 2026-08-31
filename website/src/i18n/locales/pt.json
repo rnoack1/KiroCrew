@@ -9027,7 +9027,7 @@
       "reply_2_many": "{{count}} respostas",
       "reply_2_one": "{{count}} resposta",
       "reply_2_other": "{{count}} respostas",
-      "reset_role_s_llm_session_the_channel_s_shared_me": "Redefinir a sessão de LLM de {{role}}. O histórico de mensagens compartilhado do canal é preservado.",
+      "reset_role_s_llm_session_the_channel_s_shared_me": "Redefinir a sessão de LLM de {{role}}. O histórico de mensagens compartilhado do canal é preservado. Se ainda estiver em andamento, nada é limpo.",
       "role": "Função",
       "role_e_g_logs_agent": "Função (ex.: Agente de logs)",
       "running_tool": "executando ferramenta…",
@@ -9042,7 +9042,7 @@
       "task": "Tarefa",
       "task_e_g_search_cloudwatch_logs": "Tarefa (ex.: Pesquisar logs do CloudWatch)",
       "team_preset": "Predefinição de equipe",
-      "this_will_reset_conversation_history_for_all_age": "Isto redefinirá o histórico de conversa de todos os agentes. As configurações são preservadas.",
+      "this_will_reset_conversation_history_for_all_age": "Isto redefinirá o histórico de conversa de todos os agentes. As configurações são preservadas. Os agentes ainda em andamento mantêm o seu histórico.",
       "thread": "Tópico",
       "topic": "Assunto",
       "failed_to_load_channels": "Falha ao carregar os canais",
@@ -9052,7 +9052,10 @@
       "failed_to_dismiss_agent": "Falha ao dispensar o agente",
       "failed_to_update_agent": "Falha ao atualizar o agente",
       "failed_to_close_channel": "Falha ao fechar o canal",
-      "failed_to_clear_context": "Falha ao limpar o contexto"
+      "failed_to_clear_context": "Falha ao limpar o contexto",
+      "clear_context_busy_error": "Contexto mantido para {{roles}} — ainda em andamento. Limpe novamente quando terminarem.",
+      "clear_context_cleared_roles": "Limpo para {{roles}}.",
+      "clear_context_partially_cleared": "Contexto parcialmente limpo"
     },
     "chat": {
       "activityViewer": {

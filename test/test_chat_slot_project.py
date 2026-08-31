@@ -8,7 +8,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew.dashboard.chat import api_chat_slot_project
+from kiro_crew.dashboard.chat import api_chat_slot_project, api_chat_slot_workspace
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 
@@ -16,6 +16,7 @@ def _make_app(state: DashboardState) -> web.Application:
     app = web.Application()
     app["state"] = state
     app.router.add_post("/api/chat/slots/{slot}/project", api_chat_slot_project)
+    app.router.add_post("/api/chat/slots/{slot}/workspace", api_chat_slot_workspace)
     return app
 
 
@@ -27,10 +28,90 @@ def _mock_state(slot: _ChatSlot | None = None) -> DashboardState:
     state.push_slots_update = MagicMock()
     state.sessions = MagicMock()
     state.sessions.reset = AsyncMock()
+    # Resolve-only helper: async, and must return a real path string for the arm sites.
+    state.sessions.resolve_arm_cwd = AsyncMock(side_effect=lambda key, cwd: cwd or "/w/_default")
     state.file_indexes = MagicMock()
     state.file_indexes.acquire = AsyncMock()
     state.file_indexes.release = AsyncMock()
     return state
+
+
+class TestWorkspaceSwitchAdvancesTheGeneration:
+    """A workspace switch commits a new project, so it must advance the generation.
+
+    The retry site prefers a live arm over the cwd its caller stated, which is correct
+    while the arm is the newest statement about the project. A switch that commits a new
+    project without advancing the generation leaves the earlier arm live, so it outranks
+    the selection and the first turn's relative writes land in the project the user left.
+    """
+
+    @staticmethod
+    def _factory(seen: list):
+        def factory(session_key=None, agent=None, channel_id=None, cwd=None, **kwargs):
+            provider = AsyncMock()
+            provider.start = AsyncMock()
+            provider.shutdown = AsyncMock()
+            provider.cwd = cwd if cwd else "/unset"
+            provider.context_usage_pct = MagicMock(return_value=0.0)
+            provider.is_alive = MagicMock(return_value=True)
+            provider.is_process_alive = MagicMock(return_value=True)
+            provider.has_active_turn = MagicMock(return_value=False)
+            provider.runtime_info = MagicMock(return_value=(None, None))
+            seen.append(provider)
+            return provider
+
+        return factory
+
+    @pytest.mark.asyncio
+    async def test_the_retried_turn_binds_the_newly_selected_workspace(self, tmp_path):
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.session import SessionManager
+
+        beta = tmp_path / "beta"
+        gamma = tmp_path / "gamma"
+        for d in (beta, gamma):
+            d.mkdir()
+
+        seen: list = []
+        mgr = SessionManager(KiroCrewConfig(), provider_factory=self._factory(seen))
+        slot = _ChatSlot("test")
+        slot.project = str(beta)
+        state = _mock_state(slot)
+        state.sessions = mgr
+
+        # The key the slot's turns actually run on, which is what the handler advances.
+        session_key = effective_session_key(slot)
+        # The eager spawn for beta armed the key; nothing has satisfied it yet.
+        mgr.mark_retire_on_next_claim(session_key, str(beta))
+
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_handlers._reset_slot_session_or_warn",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                "kiro_crew.dashboard.chat_handlers.default_project_dir",
+                new=MagicMock(return_value=str(gamma)),
+            ),
+            patch("kiro_crew.dashboard.chat_handlers.save_slot_off_loop", new=AsyncMock()),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/workspace", json={"workspace": "gamma-ws"}
+                )
+                assert resp.status == 200, await resp.text()
+
+        assert slot.project == str(gamma), "precondition: the switch committed gamma"
+
+        # The first turn after the switch. It states gamma; the retry site must not
+        # substitute the arm's beta for it.
+        provider, _, _ = await mgr.get_or_create(session_key, cwd=str(gamma))
+        assert provider.cwd == str(gamma), (
+            "the turn after a workspace switch must bind the selected project; binding "
+            f"{provider.cwd!r} writes into the workspace the switch left"
+        )
+        await mgr.close_all()
 
 
 class TestChatSlotProject:
@@ -62,6 +143,35 @@ class TestChatSlotProject:
             )
             assert resp.status == 200
             assert slot.project == ""
+
+    @pytest.mark.asyncio
+    async def test_a_failed_workspace_resolution_rolls_the_project_commit_back(self, tmp_path):
+        """An unresolvable default workspace must not leave the slot committed but unarmed.
+
+        The commit lands before the arm target is resolved, so a raise there previously left
+        `slot.project` on the new value with NO deferred reset and NO retirement arm -- and a
+        later cwd-less channel claim then reuses the session still rooted at the OLD project.
+        The commit is rolled back on its own token identity and the caller is told, rather
+        than the change half-applying.
+        """
+        slot = _ChatSlot("test")
+        slot.project = str(tmp_path)
+        state = _mock_state(slot)
+        state.sessions.resolve_arm_cwd = AsyncMock(
+            side_effect=OSError("default workspace unavailable")
+        )
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/project", json={"project": ""})
+            assert (
+                resp.status == 503
+            ), f"a resolution failure must be reported, not swallowed; got {resp.status}"
+            assert slot.project == str(tmp_path), (
+                "and the commit must be ROLLED BACK -- a slot left on the new project with no "
+                f"arm serves the old session to the next cwd-less claim; got {slot.project!r}"
+            )
+            assert (
+                slot._pending_reset_history_key is None
+            ), "nothing may be armed either, or the rollback and the arm disagree"
 
     @pytest.mark.asyncio
     async def test_nonexistent_dir_returns_400(self):
@@ -163,6 +273,56 @@ class TestChatSlotProject:
         state.sessions.reset.assert_not_awaited()
         # Flag is set on the slot so chat_runner can consume it at the turn boundary.
         assert slot._pending_reset_history_key == "dashboard:test"
+
+    @pytest.mark.asyncio
+    async def test_the_arm_is_raised_before_the_endpoint_returns(self, tmp_path):
+        """The arm cannot wait for the deferred consumer -- there is a window before it.
+
+        The RESET is deferred because this endpoint is reachable over loopback from inside
+        the kiro-cli process group, so an inline teardown would killpg the caller. The ARM
+        is not: it is in-memory bookkeeping. Leaving it to `_consume_pending_reset` puts it
+        behind the eager task's 1.5s debounce, and a channel turn arriving in that window
+        states NO cwd -- so the claim-time directory check cannot fire and the arm is the
+        only thing that would refuse the pre-change session. Raised here, the window is
+        closed by the time the caller gets its 200.
+        """
+        slot = _ChatSlot("test")
+        slot.linked_session_key = "slack:1234567890.123456"
+        state = _mock_state(slot)
+        with patch("kiro_crew.dashboard.chat_handlers._save_recent_project"):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/project",
+                    json={"project": str(tmp_path)},
+                )
+                assert resp.status == 200
+
+        # Nothing has consumed the deferral yet -- no eager task was allowed to run.
+        assert slot._pending_reset_history_key == "slack:1234567890.123456"
+        state.sessions.mark_retire_on_next_claim.assert_called_once_with(
+            "slack:1234567890.123456", str(tmp_path)
+        )
+
+    @pytest.mark.asyncio
+    async def test_channel_linked_slot_defers_reset_on_its_channel_session(self, tmp_path):
+        """A channel-born slot runs its turns on the channel's own session, so the
+        deferred teardown has to name THAT session. The ``dashboard:`` prefix is
+        unconditional, so deriving the key from the slot key instead would name a
+        nonexistent ``dashboard:slack:<ts>``, the teardown would miss the live
+        session, and a later turn would reuse it with the pre-change directory."""
+        slot = _ChatSlot("test")
+        slot.linked_session_key = "slack:1234567890.123456"
+        state = _mock_state(slot)
+        with patch("kiro_crew.dashboard.chat_handlers._save_recent_project"):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/project",
+                    json={"project": str(tmp_path)},
+                )
+                assert resp.status == 200
+        state.sessions.reset.assert_not_awaited()
+        assert slot._pending_reset_history_key == "slack:1234567890.123456"
+        assert "dashboard:" not in slot._pending_reset_history_key
 
     @pytest.mark.asyncio
     async def test_unchanged_does_not_set_pending_reset(self, tmp_path):

@@ -8901,7 +8901,7 @@
       "reply": "উত্তর দিন",
       "reply_2_one": "{{count}}টি উত্তর",
       "reply_2_other": "{{count}}টি উত্তর",
-      "reset_role_s_llm_session_the_channel_s_shared_me": "{{role}}-এর LLM সেশন রিসেট করো। চ্যানেলের শেয়ার করা মেসেজ ইতিহাস অটুট থাকে।",
+      "reset_role_s_llm_session_the_channel_s_shared_me": "{{role}}-এর LLM সেশন রিসেট করো। চ্যানেলের শেয়ার করা মেসেজ ইতিহাস অটুট থাকে। যদি এটি এখনও কাজ করে, কিছুই সাফ হয় না।",
       "role": "ভূমিকা",
       "role_e_g_logs_agent": "ভূমিকা (যেমন লগ এজেন্ট)",
       "running_tool": "টুল চালাচ্ছে…",
@@ -8916,7 +8916,7 @@
       "task": "টাস্ক",
       "task_e_g_search_cloudwatch_logs": "টাস্ক (যেমন CloudWatch লগ সার্চ করুন)",
       "team_preset": "টিম প্রিসেট",
-      "this_will_reset_conversation_history_for_all_age": "এটি সব এজেন্টের কথোপকথনের ইতিহাস রিসেট করবে। কনফিগ অপরিবর্তিত থাকবে।",
+      "this_will_reset_conversation_history_for_all_age": "এটি সব এজেন্টের কথোপকথনের ইতিহাস রিসেট করবে। কনফিগ অপরিবর্তিত থাকবে। যে এজেন্টগুলি এখনও কাজ করছে তাদের ইতিহাস বজায় থাকে।",
       "thread": "থ্রেড",
       "topic": "টপিক",
       "failed_to_load_channels": "চ্যানেল লোড করা যায়নি",
@@ -8926,7 +8926,10 @@
       "failed_to_dismiss_agent": "এজেন্ট সরানো যায়নি",
       "failed_to_update_agent": "এজেন্ট আপডেট করা যায়নি",
       "failed_to_close_channel": "চ্যানেল বন্ধ করা যায়নি",
-      "failed_to_clear_context": "কনটেক্সট মুছা যায়নি"
+      "failed_to_clear_context": "কনটেক্সট মুছা যায়নি",
+      "clear_context_busy_error": "{{roles}} এর জন্য প্রসঙ্গ রাখা হয়েছে — এখনও চলছে। শেষ হলে আবার সাফ করুন।",
+      "clear_context_cleared_roles": "{{roles}}-এর জন্য সাফ করা হয়েছে।",
+      "clear_context_partially_cleared": "প্রসঙ্গ আংশিকভাবে সাফ করা হয়েছে"
     },
     "chat": {
       "activityViewer": {

@@ -8775,7 +8775,7 @@
       "preset_incident_response": "인시던트 대응",
       "reply": "답글",
       "reply_2_other": "답글 {{count}}개",
-      "reset_role_s_llm_session_the_channel_s_shared_me": "{{role}}의 LLM 세션을 초기화합니다. 채널의 공유 메시지 기록은 유지됩니다.",
+      "reset_role_s_llm_session_the_channel_s_shared_me": "{{role}}의 LLM 세션을 초기화합니다. 채널의 공유 메시지 기록은 유지됩니다. 아직 진행 중이면 아무것도 지워지지 않습니다.",
       "role": "역할",
       "role_e_g_logs_agent": "역할(예: 로그 에이전트)",
       "running_tool": "도구 실행 중…",
@@ -8790,7 +8790,7 @@
       "task": "작업",
       "task_e_g_search_cloudwatch_logs": "작업(예: CloudWatch 로그 검색)",
       "team_preset": "팀 프리셋",
-      "this_will_reset_conversation_history_for_all_age": "모든 에이전트의 대화 기록이 초기화됩니다. 설정은 유지됩니다.",
+      "this_will_reset_conversation_history_for_all_age": "모든 에이전트의 대화 기록이 초기화됩니다. 설정은 유지됩니다. 아직 진행 중인 에이전트는 기록을 유지합니다.",
       "thread": "스레드",
       "topic": "주제",
       "failed_to_load_channels": "채널을 불러오지 못했습니다",
@@ -8800,7 +8800,10 @@
       "failed_to_dismiss_agent": "에이전트를 해제하지 못했습니다",
       "failed_to_update_agent": "에이전트를 업데이트하지 못했습니다",
       "failed_to_close_channel": "채널을 닫지 못했습니다",
-      "failed_to_clear_context": "컨텍스트를 지우지 못했습니다"
+      "failed_to_clear_context": "컨텍스트를 지우지 못했습니다",
+      "clear_context_busy_error": "{{roles}}의 컨텍스트를 유지했습니다. 아직 진행 중입니다. 끝나면 다시 지우세요.",
+      "clear_context_cleared_roles": "{{roles}}은(는) 지워졌습니다.",
+      "clear_context_partially_cleared": "컨텍스트가 일부 지워졌습니다"
     },
     "chat": {
       "activityViewer": {

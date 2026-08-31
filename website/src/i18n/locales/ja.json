@@ -8775,7 +8775,7 @@
       "preset_incident_response": "インシデント対応",
       "reply": "返信",
       "reply_2_other": "{{count}}個の返信",
-      "reset_role_s_llm_session_the_channel_s_shared_me": "{{role}}のLLMセッションをリセットします。チャネルの共有メッセージ履歴は保持されます。",
+      "reset_role_s_llm_session_the_channel_s_shared_me": "{{role}}のLLMセッションをリセットします。チャネルの共有メッセージ履歴は保持されます。 処理中の場合、何もクリアされません。",
       "role": "ロール",
       "role_e_g_logs_agent": "ロール（例: ログエージェント）",
       "running_tool": "ツール実行中…",
@@ -8790,7 +8790,7 @@
       "task": "タスク",
       "task_e_g_search_cloudwatch_logs": "タスク(例: CloudWatch ログを検索)",
       "team_preset": "チームプリセット",
-      "this_will_reset_conversation_history_for_all_age": "すべてのエージェントの会話履歴がリセットされます。設定は保持されます。",
+      "this_will_reset_conversation_history_for_all_age": "すべてのエージェントの会話履歴がリセットされます。設定は保持されます。 処理中のエージェントは履歴を保持します。",
       "thread": "スレッド",
       "topic": "トピック",
       "failed_to_load_channels": "チャネル一覧の読み込みに失敗しました",
@@ -8800,7 +8800,10 @@
       "failed_to_dismiss_agent": "エージェントの却下に失敗しました",
       "failed_to_update_agent": "エージェントの更新に失敗しました",
       "failed_to_close_channel": "チャネルを閉じられませんでした",
-      "failed_to_clear_context": "コンテキストのクリアに失敗しました"
+      "failed_to_clear_context": "コンテキストのクリアに失敗しました",
+      "clear_context_busy_error": "{{roles}} のコンテキストを保持しました。処理中です。完了したらもう一度クリアしてください。",
+      "clear_context_cleared_roles": "{{roles}} はクリアされました。",
+      "clear_context_partially_cleared": "コンテキストを一部クリアしました"
     },
     "chat": {
       "activityViewer": {

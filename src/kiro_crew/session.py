@@ -122,7 +122,9 @@ from kiro_crew.config.loader import (
     default_project_dir,
     normalize_agent_model,
     published_autocompact_pct,
+    resolve_agent_bindings,
 )
+from kiro_crew.config.paths import resolved_cwd
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.mcp_gateway.abort import schedule_abort
@@ -339,6 +341,31 @@ def _provider_effectively_alive(provider: Any) -> bool:
     ):
         alive = True
     return alive
+
+
+def _resolve_runtime_agent(alias: str, project: str | None = None) -> str:
+    """Resolve an agent ALIAS to the runtime agent it currently names.
+
+    The retirement arm records the alias, never its target, so the mapping is read
+    HERE at every consume: an alias re-pointed by a config edit during the arm window
+    would otherwise hand the retry a frozen agent and run the wrong one. Reads the
+    hot-path config cache, so no filesystem work reaches the event loop.
+
+    Degrades to the alias itself: an unresolvable name is what the dispatch sites also
+    fall back to (``kiro_agent or slot.agent``), so both sides stay consistent.
+    """
+    if not alias:
+        return ""
+    try:
+        cfg = KiroCrewConfig.load()
+        # `resolve_agent_bindings` substitutes the DEFAULT agent for an unknown name,
+        # which would answer a different identity rather than resolve this one.
+        if alias not in cfg.agents:
+            return alias
+        return resolve_agent_bindings(cfg, alias, project).kiro_agent or alias
+    except Exception:
+        logger.warning("Failed to resolve runtime agent for alias %r", alias, exc_info=True)
+        return alias
 
 
 def _provider_uses_kiro_identity_store(provider: Any) -> bool:
@@ -1043,6 +1070,7 @@ class SessionManager:
             ),
             spec_model=lambda spec: spec_model(spec),
             agent_model_cache=lambda: _get_agent_model_cache(),
+            resolve_runtime_agent=_resolve_runtime_agent,
         )
 
     def _allocation_boundary(self) -> SessionAllocationService:
@@ -1495,6 +1523,57 @@ class SessionManager:
         """Return whether a live session exists for the folded key."""
         return self._allocation_boundary().has_session(key)
 
+    async def resolve_arm_cwd(self, key: str, cwd: str) -> str:
+        """Resolve an arm's target off-thread, for the CLEARED case that touches disk.
+
+        Resolves only -- it arms nothing, so the caller's arm or transfer stays synchronous
+        and atomic in its own commit window. A cleared project resolves to the per-session
+        default, which stats, mkdirs and realpaths the workspace root; on a symlinked or
+        network root that blocks in the kernel, and every arm site is reached from an async
+        handler. A non-empty project needs no filesystem work and is handed straight back.
+        """
+        if cwd:
+            return cwd
+        return await asyncio.to_thread(resolved_cwd, cwd, self._fold_key(key))
+
+    def mark_retire_on_next_claim(self, key: str, cwd: str, *, agent: str | None = None) -> None:
+        """Mark a live session invalid for reuse without disturbing its turn.
+
+        Synchronous by design. Pass ``cwd`` already resolved for a cleared project -- see
+        :meth:`resolve_arm_cwd` -- because resolving it here would put filesystem work on
+        the event loop.
+        """
+        self._allocation_boundary().mark_retire_on_next_claim(key, cwd, agent=agent)
+
+    async def note_project_change(self, key: str, cwd: str) -> None:
+        """Supersede any arm from an earlier change, and record the committed directory.
+
+        Async because the CLEARED case resolves the per-session default, which stats and
+        realpaths the workspace root -- synchronous filesystem work that would otherwise
+        run on the event loop, since every caller is an async handler. Resolving here also
+        leaves the recording itself synchronous, so no await sits between the generation
+        bump and the arm it belongs to.
+        """
+        if cwd == "":
+            folded = self._allocation_boundary()._fold_key(key)
+            cwd = await asyncio.to_thread(resolved_cwd, cwd, folded)
+        self._allocation_boundary().note_project_change(key, cwd)
+
+    def supersede_arm_for_new_slot(self, key: str) -> None:
+        """Drop an arm left by a previous occupant of a just-recycled slot key.
+
+        Synchronous by design: it resolves nothing, so no filesystem work reaches the event
+        loop and no await sits between the generation bump and the arm it supersedes.
+        """
+        self._allocation_boundary().supersede_arm_for_new_slot(key)
+
+    def transfer_retire_arm(self, from_key: str, to_key: str, cwd: str) -> None:
+        """Move an arm onto the key a rebound slot actually runs on.
+
+        Synchronous by design; pass ``cwd`` pre-resolved via :meth:`resolve_arm_cwd`.
+        """
+        self._allocation_boundary().transfer_retire_arm(from_key, to_key, cwd)
+
     def get_provider(self, key: str) -> LLMProvider | None:
         """Return the live provider for a folded key."""
         return self._allocation_boundary().get_provider(key)
@@ -1732,12 +1811,14 @@ class SessionManager:
         sess: "_Session",
         *,
         wait_if_busy: bool = True,
+        cwd: str | None = None,
     ) -> bool:
         """Acquire outside the registry lock and revalidate identity."""
         return await self._allocation_boundary()._reacquire_and_validate(
             key,
             sess,
             wait_if_busy=wait_if_busy,
+            cwd=cwd,
         )
 
     async def _evict_stale_session(self, key: str, sess: "_Session") -> None:

@@ -5923,7 +5923,7 @@
       "task": "Task",
       "task_e_g_search_cloudwatch_logs": "Task (e.g. Search CloudWatch logs)",
       "team_preset": "Team Preset",
-      "this_will_reset_conversation_history_for_all_age": "This will reset conversation history for all agents. Configs are preserved.",
+      "this_will_reset_conversation_history_for_all_age": "This will reset conversation history for all agents. Configs are preserved. Agents still working keep their history.",
       "thread": "Thread",
       "topic": "Topic"
     },
