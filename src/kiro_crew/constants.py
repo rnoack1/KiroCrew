@@ -691,16 +691,42 @@ def reflow_glued_option_marker(text: str) -> str:
         return m.group(0) + "\n"
 
     return _RAW_OPTIONS_GLUE_RE.sub(_replace, text)
+# DISPATCH VOCABULARY — what the dashboard reads as more than plain words.
+#
+# NOT a strip guard. The recommendation rides in an out-of-band control tag
+# (``<!-- recommended:N -->``, grammar below), so no label is ever rewritten and there
+# is no prefix whose removal could promote inert text. What survives is the QUICK-SEND
+# refusal, which answers a different question and stands on its own: a chip that sends
+# on ONE click must not dispatch a command, and that is true of a bare ``/clear`` label
+# with no marker anywhere near it. Mirrored in ``recommendation.ts``; parity pinned by
+# ``test_dispatch_sigil_parity.py``.
+_RESERVED_DISPATCH_SIGILS = ("/", "@", "!", "$")
+
+# Same token shape the skill expander resolves, which it does ANYWHERE in a message rather than
+# only at the start -- so this is the one dispatch form a leading-sigil test cannot reach.
+_EMBEDDED_SKILL_TOKEN_RE = re.compile(r"(?<![\w$])\$[a-z0-9][a-z0-9/_-]*", re.IGNORECASE)
+
+# The frontend send path trims before dispatching, and its trim removes characters Python's
+# ``str.strip`` keeps (U+FEFF above all), so a guard reading only ``strip`` output misses them.
+_DISPATCH_LEADING_RE = re.compile(r"^[\s\u200b-\u200d\u2060\ufeff]+")
 
 
 # CONTROL-TAG HTML COMMENTS — canonical grammar (single source of truth).
 #
 # Agent control tags ride in HTML comments, which the dashboard's markdown
 # pipeline renders as nothing (rehype-raw emits comment nodes the react
-# renderer skips). Three families exist in ``src/``:
+# renderer skips). Four families exist in ``src/``:
 #   * ``<!-- keep-visible -->``       — collapse-all exemption
 #   * ``<!-- deliver:<route> -->``    — heartbeat routing
 #   * ``<!-- plan_task_id:<id> -->``  — task-planner Apply-to-Tasks anchor
+#   * ``<!-- recommended:<n> -->``    — which ``[OPTIONS:]`` choice is recommended
+#
+# The ``recommended`` family is why this grammar carries the marker at all. Its
+# predecessor spelled the recommendation INSIDE the option label, and because a
+# label is dispatched verbatim as the user's next message, removing that prefix
+# could promote inert text into a command — which forced a mirrored fence of
+# dispatch sigils, provenance openers, plan actions and stop words across two
+# runtimes. Out here the label is never touched, so that entire class is gone.
 #
 # ONE GRAMMAR, TAIL-ANCHORED + FENCE-GUARDED, case-insensitive, both
 # recognizers (this regex and ``website/src/app-sdk/protocol/
@@ -725,9 +751,7 @@ def reflow_glued_option_marker(text: str) -> str:
 # quadratic). An unterminated ``<!--`` is NOT matched: swallowing to
 # end-of-text on a missing ``-->`` silently deletes visible prose. A tag
 # body over the bound is not a real control tag and stays visible.
-_CONTROL_TAG_BODY = (
-    r"<!--(?:\s{0,16}keep-visible\s{0,16}|\s{0,16}(?:deliver|plan_task_id):[^>\n]{0,256})-->"
-)
+_CONTROL_TAG_BODY = r"<!--(?:\s{0,16}keep-visible\s{0,16}|\s{0,16}(?:deliver|plan_task_id|recommended):[^>\n]{0,256})-->"
 _TRAILING_CONTROL_LINES_RE = re.compile(
     r"(?:(?:^|\n)[ \t]{0,3}" + _CONTROL_TAG_BODY + r"[ \t]{0,16})+\s{0,16}\Z",
     re.IGNORECASE,
@@ -941,6 +965,51 @@ def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
     return text[: m.start()]
 
 
+#: One ``<!-- recommended:<n> -->`` line inside a trailing control-tag block. Bounded
+#: to three digits: an option menu is a handful of choices, and an unbounded run would
+#: be a body over the grammar's own cap rather than a real emission.
+_RECOMMENDED_TAG_RE = re.compile(
+    r"(?:^|\n)[ \t]{0,3}<!--\s{0,16}recommended:\s{0,16}(\d{1,3})\s{0,16}-->[ \t]{0,16}",
+    re.IGNORECASE,
+)
+
+
+def extract_recommended_index(text: str) -> tuple[str, int | None]:
+    """Read the out-of-band recommendation tag, returning ``(text_without_it, index)``.
+
+    The index is 1-based and reported RAW — validating it against the option count is
+    the caller's job, because only the caller knows how many choices the menu has. A
+    tag naming a choice that does not exist is a producer bug that must degrade to "no
+    recommendation", never to a wrong badge or an IndexError.
+
+    An index rather than the label text, deliberately. The label is what a click
+    dispatches, so any scheme that repeats it here would have to agree with it
+    byte-for-byte forever -- the correspondence problem the in-band marker solved by
+    editing the label, which is exactly what made removing the marker dangerous. An
+    integer cannot be mistaken for content, cannot be dispatched, and its validation
+    is a bounds check.
+
+    Searched only INSIDE the trailing control-tag block, so this inherits that
+    grammar's tail-anchoring and fence guard: a tag quoted in prose or inside an
+    unterminated fence is visible content and is neither read nor removed. A tag whose
+    value is not a bounded digit run does not match, so it yields no recommendation and
+    is left for :func:`strip_control_comments` to remove as an unreadable tag.
+
+    The tag is removed here rather than left to that strip because a consumer may
+    project this text somewhere HTML comments are not invisible -- Slack mrkdwn shows
+    them literally.
+    """
+    m = _TRAILING_CONTROL_LINES_RE.search(text)
+    if m is None or _in_open_fence(text, m.start()):
+        return text, None
+    block = m.group(0)
+    tag = _RECOMMENDED_TAG_RE.search(block)
+    if tag is None:
+        return text, None
+    remainder = block[: tag.start()] + block[tag.end() :]
+    return text[: m.start()] + remainder, int(tag.group(1))
+
+
 #: Prefix closures of the marker grammars, for
 #: :func:`split_trailing_protocol_suffix`'s unfinished-marker probe: a tail is
 #: a STILL-STREAMING marker only when every byte it holds so far could extend
@@ -1095,6 +1164,24 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
 # a `startswith` written against one silently misses the other.
 SUBAGENT_COMPLETION_PREFIX = "[Subagent completion event]"
 SUBAGENT_BATCH_COMPLETION_PREFIX = "[Subagent batch completion event]"
+
+# Provenance openers, defined here because this module is the leaf both the fence and
+# ``dashboard.state`` read. ``state`` aliases them, so one spelling exists per opener.
+MONITOR_WAKE_PREFIX = "[Monitor wake]"
+CRON_NOTIFY_PREFIX = "[Cron notification from "
+REFUSAL_RECOVERY_PREFIX = "[Tool refusal — automatic recovery]"
+STALE_RECOVERY_PREFIX = "[Stalled turn — automatic recovery]"
+TOOL_STALL_RECOVERY_PREFIX = "[Tool stall — automatic recovery]"
+CONN_RECOVERY_PREFIX = "[Connection lost — automatic recovery]"
+BUSY_RECOVERY_PREFIX = "[Session busy — automatic recovery]"
+POSTTOKEN_RECOVERY_PREFIX = "[Interrupted turn — automatic recovery]"
+EMPTY_RESPONSE_RECOVERY_PREFIX = "[Empty response — automatic recovery]"
+PROMISE_ONLY_RECOVERY_PREFIX = "[Unfinished action — automatic recovery]"
+COMPACTION_RECOVERY_PREFIX = "[Context compacted — automatic recovery]"
+MANUAL_RESUME_RECOVERY_PREFIX = "[Continue — requested by the user]"
+HOOK_CONTINUATION_RECOVERY_PREFIX = "[Hook continuation — automatic]"
+HOOK_HALTED_RECOVERY_PREFIX = "[Stop-hook nudge cap reached]"
+REFUSAL_INBAND_RECOVERY_PREFIX = "[Tool blocked — reason sent to the agent]"
 
 # Key under a completion message's ``meta`` where the gateway stamps the
 # structured header facts (outcome, tallies, chunk index, agent id) the

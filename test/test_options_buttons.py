@@ -9,13 +9,14 @@ from kiro_crew.slack.format import (
     build_options_blocks,
     build_options_selected_blocks,
     extract_options,
+    extract_options_with_recommendation,
 )
 
 
 class TestExtractOptions:
     def test_extracts_choices(self):
         text = "Pick one\n[OPTIONS: A | B | C]"
-        cleaned, choices = extract_options(text)
+        cleaned, choices, _ = extract_options_with_recommendation(text)
         assert choices == ["A", "B", "C"]
         assert "[OPTIONS:" not in cleaned
 
@@ -35,18 +36,18 @@ class TestExtractOptions:
         assert choices == ["A", "B"]
 
     def test_no_options_returns_empty(self):
-        cleaned, choices = extract_options("Hello world")
+        cleaned, choices, _ = extract_options_with_recommendation("Hello world")
         assert choices == []
         assert cleaned == "Hello world"
 
     def test_strips_whitespace_from_choices(self):
-        _, choices = extract_options("[OPTIONS:  X |  Y  | Z ]")
+        _, choices, _ = extract_options_with_recommendation("[OPTIONS:  X |  Y  | Z ]")
         assert choices == ["X", "Y", "Z"]
 
     def test_bracket_inside_option_text_survives(self):
         # The closing ']' is anchored to end-of-line, so a literal ']' inside
         # an option (e.g. "Fix [x] logging") must not truncate the body.
-        _, choices = extract_options("[OPTIONS: Fix [x] logging | Skip]")
+        _, choices, _ = extract_options_with_recommendation("[OPTIONS: Fix [x] logging | Skip]")
         assert choices == ["Fix [x] logging", "Skip"]
 
     def test_body_does_not_span_newlines(self):
@@ -55,7 +56,9 @@ class TestExtractOptions:
         # in "]" must NOT match across the newline (which would delete a
         # multi-line span from the visible text and emit bogus pills). The
         # tempered body excludes \n (``[^[\n]``) precisely so this cannot happen.
-        cleaned, choices = extract_options("See [OPTIONS: in my notes\nsummary ]")
+        cleaned, choices, _ = extract_options_with_recommendation(
+            "See [OPTIONS: in my notes\nsummary ]"
+        )
         assert choices == []
         assert cleaned == "See [OPTIONS: in my notes\nsummary ]"
 

@@ -4507,6 +4507,8 @@
       "yes_move_it": "Move it"
     },
     "followUpBar": {
+      "recommended": "RECOMMENDED",
+      "command_shaped_kept": "Some options could run something rather than say it, so they go to the composer instead of being sent — review and edit before sending.",
       "scroll_left": "Scroll left",
       "scroll_right": "Scroll right",
       "scroll_suggestions_left": "Scroll suggestions left",

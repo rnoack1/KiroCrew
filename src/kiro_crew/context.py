@@ -2189,13 +2189,42 @@ _CRITICAL_RULES_TAIL = (
     "renders each label on a single line, so a long label displays cut off; "
     "put supporting detail in the message body before the [OPTIONS:] line and "
     "keep the label itself to the bare instruction.\n"
-    "[END CRITICAL RULES]\n\n"
+)
+_CRITICAL_RULES_END = "[END CRITICAL RULES]\n\n"
+# Dashboard only: no channel renders a badge, and only the Slack path strips the
+# marker -- a channel parse leaves it in the label, so a click sends it verbatim.
+_OPTIONS_RECOMMENDED_RULE = (
+    "Mark the option you recommend with a control tag on its own line immediately "
+    "BEFORE the `[OPTIONS:]` line: `<!-- recommended:N -->`, where N is that option's "
+    "1-based position in the line -- `<!-- recommended:2 -->` marks the second option. "
+    "Always that literal English keyword, never a translation, and never inside a "
+    "label. "
+    "The tag is an HTML comment, so it renders as nothing. The dashboard draws a badge "
+    "beside the named option; a surface that cannot draw one shows no badge and loses "
+    "nothing else. "
+    "No label is added to or removed from, so there is nothing to leave bare: EVERY "
+    "option is markable -- including one starting with `/`, `@`, `!`, `$` or "
+    "`action::`, a plan action such as `Go` or `Cancel`, and one whose first word is a "
+    "stop word -- and each still dispatches exactly the bytes you wrote. "
+    "Mark at most one option, name a position that exists, and omit the tag when no "
+    "option is a clear recommendation. Order the options most-reasonable-first so the "
+    "recommended one leads: a surface that draws no badge has position as its only "
+    "ranking, and a chip clamps a long label.\n"
 )
 # The dashboard variant is the module's canonical block: tests and the
 # marker-neutralization prefix check treat "a critical-rules block" as one of
 # these two fixed strings, so both stay module constants (never templated).
-_CRITICAL_RULES = _CRITICAL_RULES_HEAD + _DIFF_RULE_DASHBOARD + _CRITICAL_RULES_TAIL
-_CRITICAL_RULES_CHANNEL = _CRITICAL_RULES_HEAD + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL
+_CRITICAL_RULES = (
+    _CRITICAL_RULES_HEAD
+    + _DIFF_RULE_DASHBOARD
+    + _CRITICAL_RULES_TAIL
+    + _OPTIONS_RECOMMENDED_RULE
+    + _CRITICAL_RULES_END
+)
+
+_CRITICAL_RULES_CHANNEL = (
+    _CRITICAL_RULES_HEAD + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL + _CRITICAL_RULES_END
+)
 
 # Product-owned working protocol for crew members (layer 2 of the member
 # system prompt — see ContextBuilder._build_member_section for the layer
@@ -4404,11 +4433,20 @@ class ContextBuilder:
                     # restored transcript; at ~1.5K chars they are cheap
                     # insurance against output-format drift. Same variant
                     # selection and per-agent opt-out gate as session start.
-                    _resume_rules = (
-                        _critical_rules_for(session_key, runtime_source)
-                        if _agent_includes_crew_context(agent)
-                        else ""
-                    )
+                    _resume_variant = _critical_rules_for(session_key, runtime_source)
+                    _resume_rules = _resume_variant if _agent_includes_crew_context(agent) else ""
+                    # Keyed on the VARIANT, not on `_resume_rules`: an agent opted out of crew
+                    # context still resumes carrying that instruction, so this is owed anyway.
+                    if _resume_variant is _CRITICAL_RULES_CHANNEL:
+                        _resume_rules += (
+                            "[This runtime does not use the dashboard's option-marking "
+                            "prefix. If an instruction earlier in the restored history above "
+                            "told you to mark a recommended option with a literal prefix, it "
+                            "does NOT apply here: this surface sends a label as written, so "
+                            "the prefix would reach the user as their own words. Put the "
+                            "recommendation in your prose and order the options best-first "
+                            "instead.]\n"
+                        )
                     # SLIM_RESUME leg of the member lifecycle (see the
                     # chokepoint consult above): the restored transcript
                     # carries the ORIGINAL member section, but [PERMANENT

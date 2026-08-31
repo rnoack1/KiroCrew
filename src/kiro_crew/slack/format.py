@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Callable, NamedTuple
 
-from kiro_crew.constants import OPTIONS_RE_LINE
+from kiro_crew.constants import OPTIONS_RE_LINE, extract_recommended_index
 from kiro_crew.messaging.display_safety import redact_for_display, strip_ansi
 from kiro_crew.messaging.renderer import cap_choices, format_overflow
 from kiro_crew.platform.context import redact_via_context
@@ -19,7 +19,7 @@ SLACK_MAX_TEXT = 39_000
 # MULTILINE/single-line canonical parser. Defined once in constants.py (shared
 # with dashboard/state.py and the renderer surfaces) so the ReDoS-hardened
 # grammar can never drift between copies; see OPTIONS_RE_LINE for the full
-# rationale. Per-choice whitespace is stripped by extract_options().
+# rationale. Per-choice whitespace is stripped by the parse below.
 _OPTIONS_RE = OPTIONS_RE_LINE
 
 
@@ -37,6 +37,9 @@ def is_wait_identity(tool_name: str) -> bool:
     server's ``wait`` is a different tool too."""
     return (tool_name or "").strip().lower() in WAIT_IDENTITIES
 
+# Slack's own cap on a checkbox's visible text. The `*Recommended:*` line cuts at the same
+# width, or it names an option whose rendered text the reader cannot match it against.
+_CHECKBOX_TEXT_CAP = 75
 
 # Action ID prefix for OPTIONS buttons
 OPTIONS_ACTION_PREFIX = "options_choice_"
@@ -72,6 +75,32 @@ def extract_options(text: str) -> tuple[str, list[str]]:
     return cleaned, choices
 
 
+def extract_options_with_recommendation(text: str) -> tuple[str, list[str], str | None]:
+    """Extract ``(cleaned_text, choices, recommended)`` from an ``[OPTIONS:]`` trailer.
+
+    The ONE Slack-side parse of that marker. The recommendation is read from the
+    out-of-band ``<!-- recommended:<n> -->`` control tag, so no choice is rewritten:
+    the label the reader sees and the bytes a click dispatches are the ones the
+    producer wrote, and there is no prefix whose removal could promote a label into a
+    command. That is why this function no longer needs a guard.
+
+    Delegates the marker span and the cleaned-text split to :func:`extract_options`
+    rather than re-deriving them, so the two readings cannot diverge and the
+    surrounding-text handling has ONE definition.
+
+    *recommended* is returned as the matched LABEL rather than the index, because every
+    consumer of this value compares labels (``ParsedOptions.recommended``, the Slack
+    ``*Recommended:*`` line). An index naming a choice the menu does not have yields
+    ``None``: a producer bug must degrade to "no recommendation", never to a badge on
+    the wrong option.
+    """
+    cleaned_text, choices = extract_options(text)
+    cleaned_text, index = extract_recommended_index(cleaned_text)
+    if index is None or not 1 <= index <= len(choices):
+        return cleaned_text, choices, None
+    return cleaned_text, choices, choices[index - 1]
+
+
 def _redact_choices(
     choices: list[str],
     redactor: Callable[[str], str] | None,
@@ -105,6 +134,7 @@ def build_options_blocks(
     *,
     redactor: Callable[[str], str] | None = None,
     staleness_token: str | None = None,
+    recommended: str | None = None,
 ) -> list[dict]:
     """Build Slack Block Kit checkboxes + Send button for multi-select OPTIONS.
 
@@ -123,6 +153,11 @@ def build_options_blocks(
     the gateway remembering anything: see
     :func:`kiro_crew.slack.outbound.encode_options_token`. Omitting it posts a
     control that cannot be proven stale, so clicks on it are honoured.
+
+    *recommended* names the choice the agent marked. Slack renders no badge and the
+    marker is stripped off the label, so it is restated as a line ABOVE the controls
+    -- the dashboard shows a badge, Slack shows a sentence, and neither dispatches
+    the marker. Pass the CLEANED label: it is display text, matched against nothing.
     """
     # Circular import: slack/transport.py imports SLACK_MSG_LIMIT from this
     # module at top level, so the capabilities object must be imported lazily.
@@ -132,7 +167,7 @@ def build_options_blocks(
     safe = _redact_choices(kept, redactor)
     options = [
         {
-            "text": {"type": "plain_text", "text": choice[:75]},
+            "text": {"type": "plain_text", "text": choice[:_CHECKBOX_TEXT_CAP]},
             "value": choice[:150],
         }
         for choice in safe
@@ -156,6 +191,7 @@ def build_options_blocks(
     if staleness_token:
         actions["block_id"] = staleness_token
     blocks: list[dict] = [actions]
+    shown = 0
     if overflow:
         # Chunk instead of slicing: a single [:2900] would re-create the
         # silent data loss this cap exists to remove, one layer down. Slack
@@ -167,7 +203,6 @@ def build_options_blocks(
         # a VISIBLE count marker; never silent.
         lines = format_overflow(_redact_choices(overflow, redactor), start=len(safe)).split("\n")
         packed: list[str] = []
-        shown = 0
         for line in lines:
             if packed and len(packed[-1]) + 1 + len(line) <= 2900:
                 packed[-1] += "\n" + line
@@ -200,6 +235,35 @@ def build_options_blocks(
                     ],
                 }
             )
+    # Rendered LAST so the packing count is known, but inserted FIRST so the reader meets
+    # the steer before the controls. `shown` is what makes the reachability test possible.
+    if recommended and recommended in choices:
+        _in_overflow = recommended in overflow
+        # A choice past the checkbox cap is pickable only by typing it, so the line must
+        # name text the reader can read somewhere. Dropped from the listing, it names nothing.
+        _listed = not _in_overflow or overflow.index(recommended) < shown
+        if _listed:
+            # Cut at the checkbox's own cap, or this line and the option it names disagree.
+            _full = _redact_choices([recommended], redactor)[0]
+            # Marked because an unmarked mid-word stop reads as a rendering fault. Display
+            # only -- nothing matches this string, so the marker costs no correctness.
+            _rec = _full[:_CHECKBOX_TEXT_CAP] + ("..." if len(_full) > _CHECKBOX_TEXT_CAP else "")
+            # A cut name still needs the how: the label reads in full in the listing, which
+            # `_listed` has just established, so "that option" resolves to typeable text.
+            _how = " — reply with that option to choose it" if _in_overflow else ""
+            blocks.insert(
+                0,
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*Recommended:* {escape_mrkdwn(_rec)}{_how}",
+                        }
+                    ],
+                },
+            )
+
     return blocks
 
 
@@ -245,6 +309,10 @@ def build_options_selected_blocks(
     Input arrives re-derived from the rendered message's blocks, so it is
     already ≤ the cap; the shared ``cap_choices`` keeps the two paths driven
     by one value so they cannot drift.
+
+    No recommendation is rendered. This is a SPENT record -- nothing here can be
+    acted on -- so a marker would only re-introduce the raw ``(recommended)`` text
+    that the rest of this path exists to keep out of what a reader sees.
     """
     from kiro_crew.slack.transport import SLACK_CAPABILITIES  # circular (see above)
 

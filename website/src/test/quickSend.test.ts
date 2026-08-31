@@ -38,4 +38,26 @@ describe('tryQuickSend', () => {
     expect(tryQuickSend('hello', true, true, false, 0, send)).toBe(false)
     expect(send).not.toHaveBeenCalled()
   })
+
+  it('sends a label that merely LOOKS like a marker, because it is ordinary text now', () => {
+    const send = vi.fn()
+    // `(recommended)` has no protocol meaning inside a label any more -- the recommendation
+    // rides in a control tag. So this label is prose that opens with a parenthetical, and a
+    // click must send exactly the bytes the user read. It is not command-shaped: it opens
+    // with `(`, so nothing dispatches.
+    expect(tryQuickSend('(recommended) /clear', true, false, false, 0, send)).toBe(true)
+    expect(send).toHaveBeenCalledWith('(recommended) /clear')
+  })
+
+  it('refuses a label that would dispatch a command', () => {
+    const send = vi.fn()
+    expect(tryQuickSend('/clear', true, false, false, 0, send)).toBe(false)
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('sends an ordinary label', () => {
+    const send = vi.fn()
+    expect(tryQuickSend('Merge it now', true, false, false, 0, send)).toBe(true)
+    expect(send).toHaveBeenCalledWith('Merge it now')
+  })
 })
