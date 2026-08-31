@@ -21,9 +21,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import type { ChatSlot } from '../types'
 
-const mocks = vi.hoisted(() => ({ setSlotPin: vi.fn(), forkChatSlot: vi.fn(), chatSlots: vi.fn() }))
-vi.mock('../api/client', () => ({
+const mocks = vi.hoisted(() => ({
+  setSlotPin: vi.fn(), forkChatSlot: vi.fn(), chatSlots: vi.fn(), dashboardConfig: vi.fn(),
+}))
+vi.mock('../api/client', async () => ({
   SEARCH_MIN_CHARS: 2,
+  // Re-exported so the hook's `err instanceof ApiError` has a real right-hand side.
+  ApiError: (await import('../api/apiError')).ApiError,
   api: new Proxy(mocks as Record<string, unknown>, {
     get: (t, p: string) => (p in t ? t[p] : vi.fn().mockResolvedValue([])),
   }),
@@ -37,6 +41,8 @@ vi.mock('../pages/chat/ChatSettings', () => cfgMock)
 import { store } from '../store'
 import { sseSlots, markSlotUnread, updateSlotPin } from '../store/dashboardSlice'
 import { useSessionActions } from '../hooks/useSessionActions'
+import { ApiError } from '../api/apiError'
+import { recordError, __resetErrorJournalForTests } from '../utils/errorReport'
 
 const SLOT = 'chat-actions-1'
 
@@ -60,6 +66,7 @@ beforeEach(() => {
   mocks.setSlotPin.mockResolvedValue({})
   mocks.forkChatSlot.mockResolvedValue({ ok: true, key: 'forked' })
   mocks.chatSlots.mockResolvedValue([])
+  mocks.dashboardConfig.mockResolvedValue({})
   cfgMock.loadChatConfig.mockReturnValue({ confirmCloseSession: false })
   vi.stubGlobal('confirm', vi.fn(() => true))
 })
@@ -70,6 +77,137 @@ afterEach(() => {
 })
 
 describe('useSessionActions', () => {
+  function overCapacity() {
+    return new ApiError(400, 'too large', JSON.stringify({ code: 'fork_corpus_too_large' }))
+  }
+
+  it('reports a refused duplicate as state for the caller to render, raising no dialog', async () => {
+    seed()
+    mocks.forkChatSlot.mockRejectedValue(overCapacity())
+    const nativeDialog = vi.fn()
+    vi.stubGlobal('alert', nativeDialog)
+    const result = renderActions()
+
+    act(() => result.current.duplicate(SLOT))
+
+    await waitFor(() => expect(result.current.forkError).toBeTruthy())
+    expect(result.current.forkError?.message).toContain('Too large to duplicate whole')
+    // Attributed to the row it was invoked on, which is where it renders.
+    expect(result.current.forkError?.slotKey).toBe(SLOT)
+    expect(nativeDialog).not.toHaveBeenCalled()
+  })
+
+  it('clears a stale refusal once a later duplicate succeeds', async () => {
+    seed()
+    mocks.forkChatSlot.mockRejectedValue(overCapacity())
+    const result = renderActions()
+
+    act(() => result.current.duplicate(SLOT))
+    await waitFor(() => expect(result.current.forkError).toBeTruthy())
+
+    // The advised recovery is to fork at a message, which succeeds. A refusal left
+    // under the row outlives the condition it described and contradicts the new tab.
+    mocks.forkChatSlot.mockResolvedValue({ ok: true, key: 'chat-2' })
+    act(() => result.current.duplicate(SLOT))
+
+    await waitFor(() => expect(result.current.forkError).toBeNull())
+  })
+
+  it('spells the refusal compactly for the narrow sidebar lane', async () => {
+    seed()
+    mocks.forkChatSlot.mockRejectedValue(overCapacity())
+    const result = renderActions()
+
+    act(() => result.current.duplicate(SLOT))
+
+    await waitFor(() => expect(result.current.forkError).toBeTruthy())
+    const msg = result.current.forkError!.message
+    // The six-word quoted control name is what overflows an inline notice in a 320px
+    // lane, so the compact spelling must not carry it -- while still naming the recovery.
+    expect(msg).not.toContain('Fork conversation from here')
+    expect(msg).toContain('fork from a message')
+    expect(msg).toContain('end you want to keep')
+  })
+
+  it('advises neutrally without reading config, whatever the fork direction', async () => {
+    seed()
+    mocks.forkChatSlot.mockRejectedValue(overCapacity())
+    mocks.dashboardConfig.mockResolvedValue({ tail_fork_enabled: true })
+    const result = renderActions()
+
+    act(() => result.current.duplicate(SLOT))
+
+    await waitFor(() => expect(result.current.forkError).toBeTruthy())
+    expect(result.current.forkError?.message).not.toContain('later message')
+    expect(result.current.forkError?.message).not.toContain('earlier message')
+    expect(result.current.forkError?.message).toContain('end you want to keep')
+    expect(mocks.dashboardConfig).not.toHaveBeenCalled()
+  })
+
+  it('still surfaces the refusal when the config lookup fails too', async () => {
+    seed()
+    mocks.forkChatSlot.mockRejectedValue(overCapacity())
+    mocks.dashboardConfig.mockRejectedValue(new Error('config unavailable'))
+    const result = renderActions()
+
+    act(() => result.current.duplicate(SLOT))
+
+    await waitFor(() => expect(result.current.forkError).toBeTruthy())
+    expect(result.current.forkError?.message).toContain('Too large to duplicate whole')
+    expect(result.current.forkError?.message).not.toContain('earlier message')
+    expect(result.current.forkError?.message).not.toContain('later message')
+  })
+
+  it('keeps the structured report the localized line can no longer be matched to', async () => {
+    seed()
+    __resetErrorJournalForTests()
+    // The journal is keyed on the RAW wire text, which the localized copy replaces.
+    const journalled = recordError({
+      source: 'api', message: 'too large', status: 400,
+      code: 'fork_corpus_too_large', endpoint: '/api/chat/slots/fork',
+    })
+    mocks.forkChatSlot.mockRejectedValue(overCapacity())
+    const result = renderActions()
+
+    act(() => result.current.duplicate(SLOT))
+
+    await waitFor(() => expect(result.current.forkError).toBeTruthy())
+    expect(result.current.forkError?.message).toContain('Too large to duplicate whole')
+    expect(result.current.forkError?.report?.id).toBe(journalled.id)
+    expect(result.current.forkError?.report?.code).toBe('fork_corpus_too_large')
+    expect(result.current.forkError?.report?.endpoint).toBe('/api/chat/slots/fork')
+  })
+
+  it('does not tell an off-transcript reader to pick a message that is not there', async () => {
+    seed()
+    mocks.forkChatSlot.mockRejectedValue(overCapacity())
+    const result = renderActions()
+
+    act(() => result.current.duplicate(SLOT))
+
+    await waitFor(() => expect(result.current.forkError).toBeTruthy())
+    // The session list shows no message list, so "Pick an earlier message" names an
+    // affordance the reader cannot reach; and it must not answer Duplicate with "fork".
+    expect(result.current.forkError?.message).not.toContain('Pick an')
+    expect(result.current.forkError?.message).not.toContain('too large to fork')
+    expect(result.current.forkError?.message).toContain('Open it')
+    // The recovery must still name a FORK, not the clipboard Copy the Duplicate icon
+    // otherwise suggests -- but the compact lane names the action, not the control.
+    expect(result.current.forkError?.message).toContain('fork from a message')
+  })
+
+  it('clears a refused duplicate on dismiss', async () => {
+    seed()
+    mocks.forkChatSlot.mockRejectedValue(overCapacity())
+    const result = renderActions()
+    act(() => result.current.duplicate(SLOT))
+    await waitFor(() => expect(result.current.forkError).toBeTruthy())
+
+    act(() => result.current.clearForkError())
+
+    expect(result.current.forkError).toBeNull()
+  })
+
   it('toggleRead flips based on dashboard.unreadSlots', () => {
     seed()
     store.dispatch(markSlotUnread(SLOT))          // start unread
