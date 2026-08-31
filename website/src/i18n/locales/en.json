@@ -4489,6 +4489,10 @@
       "yes_move_it": "Move it"
     },
     "followUpBar": {
+      "recommended": "RECOMMENDED",
+      "recommended_marker_kept": "Click one to put it in the composer and edit the prefix out before sending: a “(recommended) …” option sends that text as part of the message.",
+      "command_shaped_kept": "An option that starts like a command (for example “/” or “@”) is not sent on click: it goes to the composer first, so you can see and edit it before anything runs.",
+      "both_kinds_kept": "Some options here are not sent on one click: a “(recommended) …” prefix would be sent as written, and an option starting like a command (for example “/” or “@”) could run. Click one to put it in the composer, where it can be edited first.",
       "scroll_left": "Scroll left",
       "scroll_right": "Scroll right",
       "scroll_suggestions_left": "Scroll suggestions left",
