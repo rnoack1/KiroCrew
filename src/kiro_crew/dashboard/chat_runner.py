@@ -3376,6 +3376,8 @@ def _strip_yaml_frontmatter(content: str) -> str:
     return content
 
 
+# Same cross-surface dependent as the slash path: `splitRecommendation` refuses to strip a
+# marker off an `@`-leading label, so a sigil added here needs adding there too.
 def _expand_prompt_mention(
     message: str,
     state: DashboardState,
@@ -10659,6 +10661,7 @@ async def _run_chat(
                 from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
                     build_options_blocks,
                     extract_options,
+                    extract_recommended_option,
                     render_for_slack,
                 )
 
@@ -10668,6 +10671,9 @@ async def _run_chat(
                 # controls render at all -- and a >39,000-char turn used to lose
                 # the tag entirely to to_slack_mrkdwn's self-truncation.
                 _mirror_body, _mirror_options = extract_options(assistant_text)
+                # Read the marker BEFORE the strip discards it: this turn ran on the
+                # dashboard, so the agent marked a chip instead of naming its pick in prose.
+                _mirror_recommended = extract_recommended_option(assistant_text)
 
                 for _part in render_for_slack(_mirror_body):
                     await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
@@ -10683,7 +10689,9 @@ async def _run_chat(
                     # with a conversation that never asked the question.
                     _mirror_token = await asyncio.to_thread(mint_options_token, state, session_key)
                     _mirror_blocks = build_options_blocks(
-                        _mirror_options, staleness_token=_mirror_token
+                        _mirror_options,
+                        staleness_token=_mirror_token,
+                        recommended=_mirror_recommended,
                     )
                     # The thread's owner BEFORE the post. A relink landing while
                     # post_blocks is in flight moves the conversation to another

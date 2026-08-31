@@ -1,0 +1,23 @@
+{
+  "_comment": "Shared (recommended)-marker grammar vectors. The grammar is implemented TWICE -- src/kiro_crew/constants.py::strip_recommended_marker and website/src/app-sdk/protocol/recommendation.ts::splitRecommendation -- and nothing but these vectors stops the two drifting. Asserted by test/test_dispatch_sigil_parity.py and website/src/test/recommendation.test.ts. Both implementations return the ORIGINAL label when there is no marker, when the marker is the whole label, or when the cleaned label would open with a reserved dispatch sigil; so expected == label exactly when marker is false.",
+  "vectors": [
+    { "why": "leading marker is stripped", "label": "(recommended) Ship it", "expected": "Ship it", "marker": true },
+    { "why": "trailing marker is stripped", "label": "Ship it (recommended)", "expected": "Ship it", "marker": true },
+    { "why": "matching is case-insensitive, upper", "label": "(RECOMMENDED) Ship it", "expected": "Ship it", "marker": true },
+    { "why": "matching is case-insensitive, mixed", "label": "(Recommended) Ship it", "expected": "Ship it", "marker": true },
+    { "why": "case-insensitive on the TRAILING edge too", "label": "Ship it (RECOMMENDED)", "expected": "Ship it", "marker": true },
+    { "why": "case-insensitive on the trailing edge, mixed", "label": "Ship it (Recommended)", "expected": "Ship it", "marker": true },
+    { "why": "leading whitespace before the marker is allowed", "label": "   (recommended) Ship it", "expected": "Ship it", "marker": true },
+    { "why": "whitespace after a trailing marker is allowed", "label": "Ship it (recommended)   ", "expected": "Ship it", "marker": true },
+    { "why": "interior whitespace in the label survives byte-for-byte", "label": "(recommended) Run printf 'a  b'", "expected": "Run printf 'a  b'", "marker": true },
+    { "why": "edges only -- an interior marker is ordinary prose", "label": "Do (recommended) the thing", "expected": "Do (recommended) the thing", "marker": false },
+    { "why": "marker-only label is a no-op, never an empty dispatch", "label": "(recommended)", "expected": "(recommended)", "marker": false },
+    { "why": "marker-only with padding is still a no-op", "label": "  (recommended)  ", "expected": "  (recommended)  ", "marker": false },
+    { "why": "no marker at all is a no-op", "label": "Ship it", "expected": "Ship it", "marker": false },
+    { "why": "ordering variants are deliberately not admitted", "label": "(recommended first) Ship it", "expected": "(recommended first) Ship it", "marker": false },
+    { "why": "sigil guard: stripping would promote the label to a slash command", "label": "(recommended) /clear", "expected": "(recommended) /clear", "marker": false },
+    { "why": "sigil guard: stripping would promote the label to a mention", "label": "(recommended) @deploy", "expected": "(recommended) @deploy", "marker": false },
+    { "why": "sigil guard: stripping would promote the label to reserved provenance", "label": "(recommended) [Monitor wake]", "expected": "(recommended) [Monitor wake]", "marker": false },
+    { "why": "a bracket INSIDE the label is prose, so the guard must not fire", "label": "(recommended) Read the [SYSTEM] log", "expected": "Read the [SYSTEM] log", "marker": true }
+  ]
+}

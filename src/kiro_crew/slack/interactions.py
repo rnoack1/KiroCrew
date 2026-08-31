@@ -1800,6 +1800,7 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
             target_slot_name=_pinned_slot_name,
             route_pinned=_route_pinned,
             asker_key=_asker_key,
+            interpret_commands=False,
         )
     )
     _orch._handler_tasks.add(t)
@@ -2051,6 +2052,7 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             target_slot_name=_pinned_slot_name,
             route_pinned=_route_pinned,
             asker_key=_asker_key,
+            interpret_commands=False,
         )
     )
     _orch._handler_tasks.add(t)
