@@ -1313,13 +1313,39 @@ _CRITICAL_RULES_TAIL = (
     "renders each label on a single line, so a long label displays cut off; "
     "put supporting detail in the message body before the [OPTIONS:] line and "
     "keep the label itself to the bare instruction.\n"
-    "[END CRITICAL RULES]\n\n"
+)
+_CRITICAL_RULES_END = "[END CRITICAL RULES]\n\n"
+# Dashboard only: no channel renders a badge, and a channel parser strips the marker
+# before dispatch -- except on a reserved label, returned unchanged so no promotion.
+_OPTIONS_RECOMMENDED_RULE = (
+    "Mark the option you recommend by starting its label with `(recommended)`, "
+    "always that literal English word and never a translation of it -- both parsers "
+    "match only that spelling, so a translated marker survives into the label and a "
+    "click sends it as your own words. "
+    "The dashboard renders that marker as a badge beside the label and sends the "
+    "label without it. That split is SKIPPED for a label the transport has to "
+    "match verbatim, which is returned unchanged -- so on one of those the marker "
+    "would stay in the message you receive and the click would send prose instead "
+    "of acting. Leave those bare: a label starting with `/` or `@`, one opening "
+    "with a bracketed wire marker such as `[SYSTEM]`, and a sigil-less channel "
+    "command. NEVER mark a plan action either -- a label that is exactly `Go`, "
+    "`Go All` or `Cancel` starts or stops an auto-run and is matched verbatim. "
+    "Mark at most one option, and omit the marker when no option is a clear "
+    "recommendation.\n"
 )
 # The dashboard variant is the module's canonical block: tests and the
 # marker-neutralization prefix check treat "a critical-rules block" as one of
 # these two fixed strings, so both stay module constants (never templated).
-_CRITICAL_RULES = _CRITICAL_RULES_HEAD + _DIFF_RULE_DASHBOARD + _CRITICAL_RULES_TAIL
-_CRITICAL_RULES_CHANNEL = _CRITICAL_RULES_HEAD + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL
+_CRITICAL_RULES = (
+    _CRITICAL_RULES_HEAD
+    + _DIFF_RULE_DASHBOARD
+    + _CRITICAL_RULES_TAIL
+    + _OPTIONS_RECOMMENDED_RULE
+    + _CRITICAL_RULES_END
+)
+_CRITICAL_RULES_CHANNEL = (
+    _CRITICAL_RULES_HEAD + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL + _CRITICAL_RULES_END
+)
 
 # Product-owned working protocol for crew members (layer 2 of the member
 # system prompt — see ContextBuilder._build_member_section for the layer

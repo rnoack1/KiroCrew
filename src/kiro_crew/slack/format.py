@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Callable, NamedTuple
 
-from kiro_crew.constants import OPTIONS_RE_LINE
+from kiro_crew.constants import OPTIONS_RE_LINE, strip_recommended_marker
 from kiro_crew.messaging.display_safety import redact_for_display, strip_ansi
 from kiro_crew.messaging.renderer import cap_choices, format_overflow
 from kiro_crew.platform.context import redact_via_context
@@ -19,8 +19,12 @@ SLACK_MAX_TEXT = 39_000
 # MULTILINE/single-line canonical parser. Defined once in constants.py (shared
 # with dashboard/state.py and the renderer surfaces) so the ReDoS-hardened
 # grammar can never drift between copies; see OPTIONS_RE_LINE for the full
-# rationale. Per-choice whitespace is stripped by extract_options().
+# rationale. Per-choice whitespace is stripped by the parse below.
 _OPTIONS_RE = OPTIONS_RE_LINE
+
+# Slack's own cap on a checkbox's visible text. The `*Recommended:*` line cuts at the same
+# width, or it names an option whose rendered text the reader cannot match it against.
+_CHECKBOX_TEXT_CAP = 75
 
 # Action ID prefix for OPTIONS buttons
 OPTIONS_ACTION_PREFIX = "options_choice_"
@@ -39,17 +43,33 @@ SUBAGENT_ACK_ACTION_PREFIX = "subagent_ack_"
 LINK_DASHBOARD_ACTION = "mc_link_dashboard"
 
 
-def extract_options(text: str) -> tuple[str, list[str]]:
-    """Extract OPTIONS choices from LLM response and strip the tag.
+def extract_options_with_recommendation(text: str) -> tuple[str, list[str], str | None]:
+    """Extract ``(cleaned_text, choices, recommended)`` from an ``[OPTIONS:]`` trailer.
 
-    Returns (cleaned_text, choices). If no OPTIONS found, choices is empty.
+    The ONE Slack-side parse of that marker. A choice is echoed back as the user's
+    own message on submit, so the ``(recommended)`` marker is removed here; the
+    label it marked is returned as *recommended* so a caller that needs both does
+    not parse the trailer twice and cannot drift between the two readings.
+
+    *recommended* is first-wins on more than one marked choice, matching the
+    frontend contract (``ParsedOptions.recommended``), and is ``None`` when a
+    marker is present but the strip declines it -- a marker-only label, or one that
+    would open with a reserved dispatch sigil -- because nothing was stripped there
+    and the label the user sees still carries its own marker.
     """
     m = _OPTIONS_RE.search(text)
     if not m:
-        return text, []
-    choices = [c.strip() for c in m.group(1).split("|") if c.strip()]
-    cleaned = text[: m.start()].rstrip()
-    return cleaned, choices
+        return text, [], None
+    choices: list[str] = []
+    recommended: str | None = None
+    for raw in (c.strip() for c in m.group(1).split("|")):
+        if not raw:
+            continue
+        cleaned = strip_recommended_marker(raw)
+        if recommended is None and cleaned != raw:
+            recommended = cleaned
+        choices.append(cleaned)
+    return text[: m.start()].rstrip(), choices, recommended
 
 
 def _redact_choices(
@@ -85,6 +105,7 @@ def build_options_blocks(
     *,
     redactor: Callable[[str], str] | None = None,
     staleness_token: str | None = None,
+    recommended: str | None = None,
 ) -> list[dict]:
     """Build Slack Block Kit checkboxes + Send button for multi-select OPTIONS.
 
@@ -103,6 +124,11 @@ def build_options_blocks(
     the gateway remembering anything: see
     :func:`kiro_crew.slack.outbound.encode_options_token`. Omitting it posts a
     control that cannot be proven stale, so clicks on it are honoured.
+
+    *recommended* names the choice the agent marked. Slack renders no badge and the
+    marker is stripped off the label, so it is restated as a line ABOVE the controls
+    -- the dashboard shows a badge, Slack shows a sentence, and neither dispatches
+    the marker. Pass the CLEANED label: it is display text, matched against nothing.
     """
     # Circular import: slack/transport.py imports SLACK_MSG_LIMIT from this
     # module at top level, so the capabilities object must be imported lazily.
@@ -112,7 +138,7 @@ def build_options_blocks(
     safe = _redact_choices(kept, redactor)
     options = [
         {
-            "text": {"type": "plain_text", "text": choice[:75]},
+            "text": {"type": "plain_text", "text": choice[:_CHECKBOX_TEXT_CAP]},
             "value": choice[:150],
         }
         for choice in safe
@@ -136,6 +162,30 @@ def build_options_blocks(
     if staleness_token:
         actions["block_id"] = staleness_token
     blocks: list[dict] = [actions]
+    if recommended and recommended in choices:
+        # A choice past the checkbox cap still reads in the overflow text below, so point
+        # there instead of dropping the steer -- silence loses it, a pointer does not.
+        _rec = _redact_choices([recommended], redactor)[0]
+        # Cut at the checkbox's own visible cap, or the line and the option it names show
+        # different text; the ellipsis marks the cut so it does not read as the whole label.
+        _shown = _rec if len(_rec) <= _CHECKBOX_TEXT_CAP else _rec[:_CHECKBOX_TEXT_CAP] + "..."
+        _where = (
+            ""
+            if recommended in kept
+            else " (reply with it as a message — listed in full below, not clickable above)"
+        )
+        blocks.insert(
+            0,
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*Recommended:* {escape_mrkdwn(_shown)}{_where}",
+                    }
+                ],
+            },
+        )
     if overflow:
         # Chunk instead of slicing: a single [:2900] would re-create the
         # silent data loss this cap exists to remove, one layer down. Slack
@@ -225,6 +275,10 @@ def build_options_selected_blocks(
     Input arrives re-derived from the rendered message's blocks, so it is
     already ≤ the cap; the shared ``cap_choices`` keeps the two paths driven
     by one value so they cannot drift.
+
+    No recommendation is rendered. This is a SPENT record -- nothing here can be
+    acted on -- so a marker would only re-introduce the raw ``(recommended)`` text
+    that the rest of this path exists to keep out of what a reader sees.
     """
     from kiro_crew.slack.transport import SLACK_CAPABILITIES  # circular (see above)
 

@@ -273,7 +273,9 @@ def _extract_options(text: str) -> tuple[str, list[str]]:
     ``[OPTIONS…`` fragment really may be a marker mid-flight, and the next frame
     re-renders from the full buffer, so hiding it costs nothing permanent.
     """
-    return split_options_trailer(text, hide_partial=True)
+    from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES  # circular at module scope
+
+    return split_options_trailer(text, capabilities=TELEGRAM_CAPABILITIES, hide_partial=True)
 
 
 # kiro-cli emits an inline "[STEERING steer-<id>: …]" ack marker when it folds a

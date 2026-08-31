@@ -89,7 +89,9 @@ def _render_options_as_text(text: str) -> str:
     A still-streaming partial ``[OPTIONS…`` fragment (no closing ``]``) is hidden
     rather than rendered, so protocol markup never flashes as raw text mid-stream.
     """
-    body, choices = split_options_trailer(text, hide_partial=True)
+    from kiro_crew.wecom.transport import WECOM_CAPABILITIES  # circular at module scope
+
+    body, choices = split_options_trailer(text, capabilities=WECOM_CAPABILITIES, hide_partial=True)
     if not choices:
         return body
     listing = format_overflow(choices, start=0)

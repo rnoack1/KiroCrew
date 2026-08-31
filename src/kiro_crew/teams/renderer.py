@@ -159,7 +159,9 @@ def _extract_options(text: str) -> tuple[str, list[str]]:
     progress bubble: a partial ``[OPTIONS…`` fragment is held back so reserved
     protocol never lands as raw text, and the next frame re-renders it anyway.
     """
-    return split_options_trailer(text, hide_partial=True)
+    from kiro_crew.teams.transport import TEAMS_CAPABILITIES  # circular at module scope
+
+    return split_options_trailer(text, capabilities=TEAMS_CAPABILITIES, hide_partial=True)
 
 
 def _strip_options(text: str) -> str:

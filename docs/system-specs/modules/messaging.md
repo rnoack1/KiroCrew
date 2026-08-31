@@ -2867,12 +2867,34 @@ parameter rather than a baked-in policy:
   cutting prose is permanent: a reply ending `see the [OPTIONS section` keeps its
   last four words.
 
+That parse also strips a leading `(recommended)` marker off each choice, because a
+choice is dispatched verbatim as the user's own next message and the marker is
+presentation, not content. The strip declines a label that would open with a slash
+command, an `@` mention, a sigil-less channel command or plan chip, or one of the
+bracket **provenance openers** a dispatcher byte-matches — so stripping can never
+change what a value means. A leading `[` is not reserved on its own: only those exact
+openers are, so `[Draft] Reword it` is ordinary label text and keeps its badge. That
+list is a literal in `constants.py` because a core module cannot import the dashboard,
+and a parity test scans both defining modules to keep the mirror faithful in each
+direction.
+
+**The steer is restated, not dropped.** The channels reached through
+`split_options_trailer` render no badge, so the parse appends one plain-text line —
+`messaging.renderer.recommended_restatement` — to the body whenever it actually
+stripped a marker. One shared spelling with no markup or emoji, for the same reason as
+`credential_redaction_notice`: the string ships to platforms with different dialects,
+or none. It is appended at the single seam rather than per renderer, so no channel can
+regress on its own, and a label the guard DECLINED is not restated because its marker
+is still visible in the label itself. Slack keeps its own richer `*Recommended:*`
+context block through `slack.format.extract_options_with_recommendation`, which parses
+the trailer separately and so never doubles this line.
+
 The default is `False` because the failure directions are asymmetric — a needless
 keep flashes markup for one frame, a needless cut deletes unrecoverable text — so a
 caller that forgets degrades toward the cosmetic failure, and every streaming caller
 states `True` explicitly, which also makes the destructive choice greppable.
 
-**`slack/format.py::extract_options` is deliberately NOT converged.** It parses the
+**`slack/format.py::extract_options_with_recommendation` is deliberately NOT converged.** It parses the
 LINE grammar (`OPTIONS_RE_LINE` — `re.MULTILINE`, end-of-*line*), not the
 end-of-buffer `OPTIONS_RE_TRAILER` every other channel uses, so routing it through
 this helper would silently stop matching a marker that ends a line mid-message.

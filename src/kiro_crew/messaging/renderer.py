@@ -35,7 +35,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from kiro_crew.constants import OPTIONS_RE_TRAILER, strip_control_comments
+from kiro_crew.constants import (
+    OPTIONS_RE_TRAILER,
+    strip_control_comments,
+    strip_recommended_marker,
+)
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.tables import render_tables, render_tables_with_metadata
 from kiro_crew.messaging.transport import TransportCapabilities
@@ -266,6 +270,23 @@ def display_safe(text: str) -> str:
     return safe.replace("@", "@\u200b").replace("<!", "<\u200b!")
 
 
+def recommended_restatement(label: str) -> str:
+    """The line a channel sends so a stripped ``(recommended)`` marker is not lost.
+
+    The dashboard renders that marker as a badge on the chip; a channel reached
+    through :func:`split_options_trailer` has no badge, and the marker is removed
+    before the label is dispatched. Without this the steer disappears entirely,
+    which is worse than the pre-badge behaviour where the reader at least saw the
+    marker in the text.
+
+    The wrapper adds no markup or emoji of its own and keeps one shared spelling,
+    for the same reasons as :func:`credential_redaction_notice` directly above: this
+    single string ships to platforms that render different dialects, or none. The
+    label is interpolated verbatim, so any markup the author put in it survives.
+    """
+    return f"Recommended: {label}"
+
+
 def credential_redaction_notice(count: int) -> str:
     """The notice a channel sends after delivering text redaction rewrote.
 
@@ -411,7 +432,9 @@ def apply_options_cap(
     return f"{body}{sep}{lines}", kept
 
 
-def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str, list[str]]:
+def split_options_trailer(
+    text: str, *, capabilities: TransportCapabilities, hide_partial: bool = False
+) -> tuple[str, list[str]]:
     """Split a trailing ``[OPTIONS:]`` marker off *text* into ``(body, choices)``.
 
     The ONE parse of that marker. Widget-capable renderers need both halves and
@@ -461,8 +484,18 @@ def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str
     """
     match = OPTIONS_RE_TRAILER.search(text)
     if match:
-        choices = [c.strip() for c in match.group(1).split("|") if c.strip()]
-        return text[: match.start()].rstrip(), choices
+        raw = [c.strip() for c in match.group(1).split("|") if c.strip()]
+        choices = [strip_recommended_marker(c) for c in raw]
+        body = text[: match.start()].rstrip()
+        marked = next((c for c, before in zip(choices, raw) if c != before), None)
+        if marked:
+            # The note joins the BODY, which is past the stream redactor and gets no
+            # credential pass of its own; the listing beside it is already redacted.
+            # Capability-aware because Webex's allow-list IS email addresses, so a blanket
+            # `@` defang would make every address in a marked label uncopyable.
+            note = recommended_restatement(display_safe_for(marked, capabilities))
+            body = f"{body}\n\n{note}" if body else note
+        return body, choices
     if hide_partial:
         idx = text.rfind("[OPTIONS")
         if idx != -1 and "]" not in text[idx:]:
@@ -508,7 +541,7 @@ def render_options_as_text(text: str, capabilities: TransportCapabilities) -> st
     ``split_options_trailer`` hands back the text unchanged, and the cap is the
     identity on an empty choice list, so one call covers all three cases.
     """
-    body, choices = split_options_trailer(text)
+    body, choices = split_options_trailer(text, capabilities=capabilities)
     return apply_options_cap(body, choices, capabilities)[0]
 
 

@@ -337,7 +337,9 @@ class WebexRenderer(Renderer):
         # cutting it would be permanent -- a reply ending ``see the [OPTIONS
         # section`` keeps its last four words. The status frame above trades the
         # other way, because a frame is transient.
-        body, choices = split_options_trailer("".join(self._buf).strip())
+        body, choices = split_options_trailer(
+            "".join(self._buf).strip(), capabilities=self.capabilities
+        )
         # Cap the choices for the widget and degrade the remainder to numbered
         # text through the SHARED helper, so the cap is enforced in one place and
         # a choice past it is still visible rather than silently dropped.
@@ -552,7 +554,9 @@ class WebexRenderer(Renderer):
         raw text -- even for one frame -- is what this hides. Safe here and not on
         the answer path because the next frame re-renders from the same buffer.
         """
-        return split_options_trailer("".join(self._buf).strip(), hide_partial=True)[0]
+        return split_options_trailer(
+            "".join(self._buf).strip(), capabilities=self.capabilities, hide_partial=True
+        )[0]
 
     def authorize_upload_root(self, root: str) -> None:
         """Authorize the provider's resolved cwd as the upload root.

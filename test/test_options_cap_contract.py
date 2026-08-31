@@ -34,6 +34,7 @@ from typing import Any, Callable
 
 import pytest
 
+from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 from kiro_crew.messaging.renderer import (
     apply_options_cap,
     cap_choices,
@@ -303,17 +304,21 @@ class TestSplitOptionsTrailer:
     """
 
     def test_a_complete_trailer_yields_body_and_choices(self) -> None:
-        body, choices = split_options_trailer("Pick one.\n\n[OPTIONS: A | B | C]")
+        body, choices = split_options_trailer(
+            "Pick one.\n\n[OPTIONS: A | B | C]", capabilities=DISCORD_CAPABILITIES
+        )
         assert body == "Pick one."
         assert choices == ["A", "B", "C"]
 
     def test_choices_are_stripped_and_blanks_dropped(self) -> None:
-        _, choices = split_options_trailer("q\n\n[OPTIONS:  A  |  | B ]")
+        _, choices = split_options_trailer(
+            "q\n\n[OPTIONS:  A  |  | B ]", capabilities=DISCORD_CAPABILITIES
+        )
         assert choices == ["A", "B"]
 
     def test_no_marker_is_an_untouched_passthrough(self) -> None:
         text = "Just an answer, no trailer."
-        assert split_options_trailer(text) == (text, [])
+        assert split_options_trailer(text, capabilities=DISCORD_CAPABILITIES) == (text, [])
 
     def test_a_matched_but_empty_trailer_still_strips_the_marker(self) -> None:
         """Otherwise reserved protocol ships as visible text.
@@ -323,14 +328,16 @@ class TestSplitOptionsTrailer:
         routes through ``apply_options_cap`` unconditionally rather than branching
         on an empty choice list.
         """
-        body, choices = split_options_trailer("Body here.\n\n[OPTIONS: ]")
+        body, choices = split_options_trailer(
+            "Body here.\n\n[OPTIONS: ]", capabilities=DISCORD_CAPABILITIES
+        )
         assert body == "Body here."
         assert choices == []
 
     def test_a_quoted_marker_mid_answer_cannot_swallow_the_body(self) -> None:
         """The end-of-buffer anchor is what prevents this."""
         text = "See [OPTIONS: in the docs] for the list, then decide."
-        assert split_options_trailer(text) == (text, [])
+        assert split_options_trailer(text, capabilities=DISCORD_CAPABILITIES) == (text, [])
 
     def test_a_partial_marker_is_kept_by_default(self) -> None:
         """The BUFFERED reading: cutting the assistant's prose is permanent.
@@ -339,11 +346,13 @@ class TestSplitOptionsTrailer:
         words, so the default cannot be the destructive one.
         """
         text = "Read the docs, see the [OPTIONS section"
-        assert split_options_trailer(text) == (text, [])
+        assert split_options_trailer(text, capabilities=DISCORD_CAPABILITIES) == (text, [])
 
     def test_a_partial_marker_is_hidden_when_asked(self) -> None:
         """The STREAMING reading: the fragment may be a marker mid-flight."""
-        body, choices = split_options_trailer("Working on it. [OPTIONS: A | B", hide_partial=True)
+        body, choices = split_options_trailer(
+            "Working on it. [OPTIONS: A | B", hide_partial=True, capabilities=DISCORD_CAPABILITIES
+        )
         assert body == "Working on it."
         assert choices == []
 
@@ -354,7 +363,9 @@ class TestSplitOptionsTrailer:
         the streaming reading must not cut it either.
         """
         text = "See [OPTIONS: in the docs] for the list."
-        assert split_options_trailer(text, hide_partial=True) == (text, [])
+        assert split_options_trailer(
+            text, hide_partial=True, capabilities=DISCORD_CAPABILITIES
+        ) == (text, [])
 
     def test_hide_partial_keeps_grammar_dead_prose(self) -> None:
         """A quoted ``[OPTIONS`` that can never become the marker is prose.
@@ -368,7 +379,9 @@ class TestSplitOptionsTrailer:
         split is about live fragments, not about deleting quoted prose.
         """
         text = "Read the docs, see the [OPTIONS section"
-        assert split_options_trailer(text, hide_partial=True) == (text, [])
+        assert split_options_trailer(
+            text, hide_partial=True, capabilities=DISCORD_CAPABILITIES
+        ) == (text, [])
 
     def test_hide_partial_keeps_everything_after_a_dead_fragment(self) -> None:
         """The loss is unbounded: everything from the quote to buffer end went.
@@ -381,13 +394,17 @@ class TestSplitOptionsTrailer:
             "The [OPTIONS grammar is end-anchored.\n\n"
             "A whole later paragraph of real prose that the reader needs."
         )
-        assert split_options_trailer(text, hide_partial=True) == (text, [])
+        assert split_options_trailer(
+            text, hide_partial=True, capabilities=DISCORD_CAPABILITIES
+        ) == (text, [])
 
     def test_a_bare_opener_at_buffer_end_is_still_hidden(self) -> None:
         """Boundary control: ``[OPTIONS`` as the final bytes may still become
         the marker (the ``:`` can be the next byte to arrive), so the
         streaming surface keeps hiding it."""
-        body, choices = split_options_trailer("Working on it. [OPTIONS", hide_partial=True)
+        body, choices = split_options_trailer(
+            "Working on it. [OPTIONS", hide_partial=True, capabilities=DISCORD_CAPABILITIES
+        )
         assert body == "Working on it."
         assert choices == []
 

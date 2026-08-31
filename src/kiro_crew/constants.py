@@ -178,6 +178,85 @@ OPTIONS_RE_TRAILER = re.compile(
     re.DOTALL,
 )
 
+# RECOMMENDED-OPTION MARKER — edges only, so an interior ``(recommended)`` stays prose.
+# Beside the trailer regex so the marker has ONE definition rather than one per renderer.
+_RECOMMENDED_LEADING_RE = re.compile(r"^\s*\(recommended\)", re.IGNORECASE)
+
+# Stripping a marker off one of these would promote inert text into a slash command or a
+# prompt mention, so such a label is left exactly as it arrived.
+_RESERVED_DISPATCH_SIGILS = ("/", "@")
+
+# Dispatch protocols longer than one character, which the sigil tuple cannot express: a
+# click whose value opens with one of these routes to an action handler, not to a message.
+_RESERVED_DISPATCH_PROTOCOLS = ("action::",)
+
+
+# Channel commands carrying NO sigil, which the prefix guard above cannot see: WeCom and
+# Weixin match these CJK spellings by exact equality. A parity test holds the list honest.
+_RESERVED_TEXT_COMMANDS = frozenset(
+    {
+        "新对话",  # wecom, weixin -- new session
+        "清空",  # wecom, weixin -- new session
+        "压缩",  # wecom -- compact
+        "帮助",  # wecom, weixin -- help
+        "停止",  # wecom, weixin -- stop
+    }
+)
+
+# Dashboard plan chips carrying NO sigil either: the orchestrator matches these by exact
+# equality after casefolding, so a stripped marker would promote a label into an auto-run.
+_RESERVED_PLAN_ACTIONS = frozenset({"go", "go all", "cancel"})
+
+# The dashboard's send path trims with JS ``trim()``, which removes U+FEFF where Python's
+# ``strip()`` keeps it -- so a probe leaning on ``strip()`` alone misses a BOM-tailed chip.
+_PLAN_ACTION_TRIM_RE = re.compile(r"^[\s\u001c-\u001f\ufeff]+|[\s\u001c-\u001f\ufeff]+$")
+
+# The frontend send path trims before dispatching, and its trim removes characters Python's
+# ``str.strip`` keeps (U+FEFF above all), so a guard reading only ``strip`` output misses them.
+_DISPATCH_LEADING_RE = re.compile(r"^[\s\u200b-\u200d\u2060\ufeff]+")
+
+
+def strip_recommended_marker(label: str) -> str:
+    """Return *label* with a LEADING ``(recommended)`` marker removed.
+
+    A channel sends an option label verbatim as the user's next message, so the
+    marker must not survive into the dispatched text. Returns the label UNCHANGED
+    when removing the marker would expose a dispatch sigil, when the cleaned label
+    IS a sigil-less channel command or a dashboard plan chip, when the marker is the
+    whole label, or when there is no leading marker -- so this can run over every
+    choice.
+
+    Leading only, matching the producer rule. A trailing marker is not recognised:
+    nothing emits one, and admitting a shape with no producer would mean stripping
+    text from a label on a guess. A drifted trailing marker therefore stays visible
+    as ordinary label text, which is what happened before this grammar existed.
+    """
+    match = _RECOMMENDED_LEADING_RE.search(label)
+    if not match:
+        return label
+    cleaned = (label[: match.start()] + label[match.end() :]).strip()
+    # What a click actually dispatches, so each guard below tests the dispatched string.
+    probe = _DISPATCH_LEADING_RE.sub("", cleaned)
+    if not probe or probe.startswith(_RESERVED_DISPATCH_SIGILS):
+        return label
+    # Case-sensitive, matching the byte comparison the action router itself performs.
+    if probe.startswith(_RESERVED_DISPATCH_PROTOCOLS):
+        return label
+    # Case-sensitive, matching the dispatch-side byte comparison it mirrors.
+    if probe.startswith(_RESERVED_PROVENANCE_PREFIXES):
+        return label
+    # Case-INsensitive, matching how ``session_summary._is_injected`` reads the same origins.
+    if probe.lstrip().lower().startswith(_INJECTED_PROVENANCE_PREFIXES):
+        return label
+    # Matched the way the channels match: exact equality, either casing.
+    if probe in _RESERVED_TEXT_COMMANDS or probe.casefold() in _RESERVED_TEXT_COMMANDS:
+        return label
+    # Matched the way the orchestrator matches a plan chip: casefolded equality.
+    if _PLAN_ACTION_TRIM_RE.sub("", probe).casefold() in _RESERVED_PLAN_ACTIONS:
+        return label
+    return cleaned
+
+
 # CONTROL-TAG HTML COMMENTS — canonical grammar (single source of truth).
 #
 # Agent control tags ride in HTML comments, which the dashboard's markdown
@@ -414,6 +493,44 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
 # a `startswith` written against one silently misses the other.
 SUBAGENT_COMPLETION_PREFIX = "[Subagent completion event]"
 SUBAGENT_BATCH_COMPLETION_PREFIX = "[Subagent batch completion event]"
+
+# A leading `[` is NOT reserved on its own -- only these exact provenance openers are
+# byte-matched as an origin claim, so `[Draft] Reword it` is ordinary label text.
+_RESERVED_PROVENANCE_PREFIXES = (
+    "[Connection lost — automatic recovery]",
+    "[Context compacted — automatic recovery]",
+    "[Continue — requested by the user]",
+    "[Cron notification from ",
+    "[Empty response — automatic recovery]",
+    "[End of cron notification]",
+    "[Hook continuation — automatic]",
+    "[Interrupted turn — automatic recovery]",
+    "[Monitor wake]",
+    "[SYSTEM]",
+    "[Session busy — automatic recovery]",
+    "[Stalled turn — automatic recovery]",
+    "[Stop-hook nudge cap reached]",
+    SUBAGENT_BATCH_COMPLETION_PREFIX,
+    SUBAGENT_COMPLETION_PREFIX,
+    "[Tool blocked — reason sent to the agent]",
+    "[Tool refusal — automatic recovery]",
+    "[Tool stall — automatic recovery]",
+    "[Unfinished action — automatic recovery]",
+)
+
+# The session-summary intent pass reads a turn opening with any of these as automation rather
+# than as something the user said, so a label stripping into one would forge that origin.
+_INJECTED_PROVENANCE_PREFIXES = (
+    "[cron notification",
+    SUBAGENT_COMPLETION_PREFIX.lower(),
+    SUBAGENT_BATCH_COMPLETION_PREFIX.lower(),
+    "[auto-nudge cycle",
+    "[monitor wake]",
+    "[tool refusal",
+    "[tool stall",
+    "=== restored context",
+    "[system]",
+)
 
 # Key under a completion message's ``meta`` where the gateway stamps the
 # structured header facts (outcome, tallies, chunk index, agent id) the

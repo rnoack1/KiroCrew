@@ -185,7 +185,9 @@ def _extract_options(text: str) -> tuple[str, list[str]]:
     ``[OPTIONS…`` fragment really may be a marker mid-flight, and the next frame
     re-renders from the full buffer, so hiding it costs nothing permanent.
     """
-    return split_options_trailer(text, hide_partial=True)
+    from kiro_crew.discord.transport import DISCORD_CAPABILITIES  # circular at module scope
+
+    return split_options_trailer(text, capabilities=DISCORD_CAPABILITIES, hide_partial=True)
 
 
 def _strip_steering(text: str) -> str:

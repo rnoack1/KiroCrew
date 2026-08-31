@@ -283,7 +283,7 @@ from kiro_crew.slack.format import (
     build_cron_ack_block,
     build_options_blocks,
     escape_mrkdwn,
-    extract_options,
+    extract_options_with_recommendation,
     render_for_slack,
 )
 from kiro_crew.slack.handler import (
@@ -2928,7 +2928,7 @@ class GatewayOrchestrator:
         # Extracted from the raw text: the tag is a plain-text marker, so pulling
         # it off before conversion is what makes the controls independent of what
         # conversion (and its 39,000-char self-truncation) does to the tail.
-        text, options = extract_options(text)
+        text, options, _cron_rec = extract_options_with_recommendation(text)
         # render_for_slack IS the redaction boundary here -- it normalises ANSI
         # first so a credential broken up by escapes cannot be reassembled by the
         # strip inside to_slack_mrkdwn, and redacts again after conversion.
@@ -2942,7 +2942,9 @@ class GatewayOrchestrator:
                 _cron_token = await asyncio.to_thread(
                     mint_options_token, self.dashboard_state, parent_key
                 )
-                option_blocks = build_options_blocks(options, staleness_token=_cron_token)
+                option_blocks = build_options_blocks(
+                    options, staleness_token=_cron_token, recommended=_cron_rec
+                )
                 option_ts = await self.slack.post_blocks(
                     channel,
                     option_blocks,
@@ -8085,7 +8087,9 @@ class GatewayOrchestrator:
                                     # tag is plain text, so extracting it after
                                     # conversion made the controls hostage to
                                     # to_slack_mrkdwn's 39,000-char truncation.
-                                    reply_text, options = extract_options(response)
+                                    reply_text, options, _sub_rec = (
+                                        extract_options_with_recommendation(response)
+                                    )
                                     for part in render_for_slack(reply_text):
                                         await self.slack.post_message(channel, part, parent_key)
                                     try:
@@ -8106,7 +8110,9 @@ class GatewayOrchestrator:
                                             )
                                             footer_blocks.extend(
                                                 build_options_blocks(
-                                                    options, staleness_token=_sub_token
+                                                    options,
+                                                    staleness_token=_sub_token,
+                                                    recommended=_sub_rec,
                                                 )
                                             )
                                         _footer_ts = await self.slack.post_blocks(

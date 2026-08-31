@@ -136,6 +136,41 @@ not linger:
 const { followUpOptions } = deriveFollowUpOptions(messages, running)
 ```
 
+#### `recommended` arrives separately from `options`
+
+**An app that does not read `recommended` now silently drops the agent's steer.** The steer no
+longer arrives inside the label, so a renderer that draws only `options` shows the recommended
+choice looking exactly like every other one.
+
+> **The wire spelling and placement of the marker are NOT part of this published contract yet.**
+> Bind to the `recommended` field, never to how the marker is written inside the trailer: the
+> placement is still being settled, and a future release may carry it out-of-band without any
+> change to the field, its value, or the badge. Anything below describes the FIELD.
+
+An option the agent marked reaches you as a clean label, with the marked one named on
+`ParsedOptions.recommended` — a single label, or `null`. It is one label rather than a set because
+the sanctioned producer marks at most one option, and a plain label rather than a map because there
+is nothing per-option to carry beyond which label won:
+
+```tsx
+const { options, recommended } = parseOptions(cleaned)
+// options     -> ['Merge it now', 'Show me the diff']
+// recommended -> 'Merge it now'
+// test it with recommended === option
+```
+
+`deriveFollowUpOptions` exposes the same value as `followUpRecommended`.
+
+**If your app renders options itself, note two things.** The label you get is the one a click should
+send — the steer was never part of the user's instruction. And `recommended` is additive: an app
+built before it existed keeps working and simply renders no recommendation, so the agent's steer is
+dropped rather than shown. Comparing `recommended === label` is what restores it. Should a producer
+break the contract and mark several options, the first wins and the rest arrive unmarked.
+
+`recommended` can also be `null` on a menu that visibly shows a recommendation: the parser declines
+any label where naming it would change what a click dispatches. Treat `null` as "no recommendation to
+render" and never infer one from the label text.
+
 The module imports no React and no dashboard component, so it is also usable from a worker, a test,
 or a non-React renderer.
 

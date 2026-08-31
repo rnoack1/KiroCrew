@@ -36,7 +36,7 @@ from kiro_crew.slack.channel_resolver import _CACHE_FILENAME, ChannelNameResolve
 from kiro_crew.slack.format import (
     build_options_blocks,
     build_options_selected_blocks,
-    extract_options,
+    extract_options_with_recommendation,
     render_for_slack,
 )
 from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions
@@ -152,7 +152,11 @@ async def drain_slack_backfill(
             return False
 
     async def _post_options(
-        choices: list[str], *, interactive: bool, row_ts: str | None = None
+        choices: list[str],
+        *,
+        interactive: bool,
+        row_ts: str | None = None,
+        recommended: str | None = None,
     ) -> str | None:
         """Post a replayed OPTIONS tag as a control instead of literal text.
 
@@ -177,7 +181,7 @@ async def drain_slack_backfill(
             mint_options_token(state, session_key, row_ts) if interactive and row_ts else None
         )
         blocks = (
-            build_options_blocks(choices, staleness_token=_token)
+            build_options_blocks(choices, staleness_token=_token, recommended=recommended)
             if interactive
             else build_options_selected_blocks(choices, [])
         )
@@ -202,13 +206,14 @@ async def drain_slack_backfill(
 
     for row in selection.first_turn:
         icon = _USER_ICON if row.get("role") == "user" else _AGENT_ICON
-        content, choices = _split_backfill_options(row)
+        content, choices, recommended = _split_backfill_options(row)
         for part in _format_backfill_parts(content, icon):
             if not await _post(part):
                 return
         if choices:
-            # The opening turn is superseded by definition — spent, never live.
-            await _post_options(choices, interactive=False)
+            # Superseded, so it renders struck-through and non-interactive -- but it is
+            # still the RECORD of what was offered, so the marker travels with it.
+            await _post_options(choices, interactive=False, recommended=recommended)
 
     if selection.skipped_turns and selection.recent:
         summary = gap_summary(selection.skipped_turns)
@@ -227,13 +232,16 @@ async def drain_slack_backfill(
     live_ts: str | None = None
     for idx, row in enumerate(selection.recent_rows):
         icon = _USER_ICON if row.get("role") == "user" else _AGENT_ICON
-        content, choices = _split_backfill_options(row)
+        content, choices, recommended = _split_backfill_options(row)
         for part in _format_backfill_parts(content, icon):
             if not await _post(part):
                 return
         if choices:
             posted_ts = await _post_options(
-                choices, interactive=idx == newest, row_ts=row.get("ts")
+                choices,
+                interactive=idx == newest,
+                row_ts=row.get("ts"),
+                recommended=recommended,
             )
             if posted_ts:
                 live_ts = posted_ts
@@ -277,13 +285,19 @@ async def drain_slack_backfill(
             )
 
 
-def _split_backfill_options(row: dict[str, Any]) -> tuple[str, list[str]]:
-    """Split a replayed row into body text and OPTIONS choices.
+def _split_backfill_options(row: dict[str, Any]) -> tuple[str, list[str], str | None]:
+    """Split a replayed row into body text, OPTIONS choices and the marked label.
 
     Only AGENT-authored rows are parsed. A person's own message can legitimately
     contain the OPTIONS syntax — quoting it, or discussing it — and lifting the
     tag out of their words would render choices they never offered, so a user row
     is returned verbatim with no choices.
+
+    The three-value parse, not the two-value one: the marker is stripped from every
+    choice because a click dispatches the label verbatim, so the ONLY record of which
+    option was marked is the third value. Dropping it here restated nothing on replay
+    while the live send restated it, which is the same turn losing its steer purely by
+    arriving through backfill.
 
     No redaction happens here on purpose. ``build_options_blocks`` runs every
     choice through ``redact_for_display``, which canonicalises the form Slack
@@ -294,8 +308,8 @@ def _split_backfill_options(row: dict[str, Any]) -> tuple[str, list[str]]:
     """
     content = backfill_content(row)
     if row.get("role") == "user":
-        return content, []
-    return extract_options(content)
+        return content, [], None
+    return extract_options_with_recommendation(content)
 
 
 def _spawn_slack_backfill(
