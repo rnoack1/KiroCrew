@@ -1,12 +1,13 @@
 ---
 title: Session Tag-Change Event as a server-side signal on lane transitions
-status: draft
+status: in-review
 author: (issue #7663 author)
 created: 2026-09-02
 last-audited: 2026-09-02
 audited-at: 6581a04ee
 doc-pr: null
-implementation-prs: []
+implementation-prs: [7669]
+implementation-scope: partial — 7669 ships the delta-only payload and defers re-entrancy
 tracking-issues: [7663]
 supersedes: []
 superseded-by: []
@@ -22,6 +23,12 @@ session enters **Done**. It argues for reusing the existing script-hook engine
 rather than adding a subsystem, and settles the four design questions the issue
 flagged as expensive to reverse once anything subscribes. It is a design of
 record only: nothing here is on main.
+
+> **Event name.** This document proposes the event as `SessionTagsChanged`; the
+> implementation ships it as **`SessionLaneChanged`**, because the event fires on a
+> change to a session's **status** tags — a board-lane transition — and not on a
+> change to its tags generally. The name below is the proposal as written; read
+> every `SessionTagsChanged` in this document as `SessionLaneChanged`.
 
 ## Summary
 
@@ -311,6 +318,23 @@ skip the event, which is exactly the failure mode `validate_folder_tag_ids`'s ow
 docstring warns about for its consolidation. Per-site emits are rejected: they are
 the shape that let review miss call sites twice during #7366 (as the
 mcp-lifecycle RFC records) and would re-open that finding here.
+
+**Amendment — what actually shipped, and how it differs from the above.** The
+recommendation stands as the target shape, but the first PR does **not** implement
+it. Emits come from the two `chat_tags.py` writers only, per-writer rather than
+through a single choke point. Three `slot.tags.append` sites therefore write status
+tags without emitting: two in `surface_channel_session` (`channel_slots.py`) and one
+in `_read_folder_tags`, reached from `api_chat_slot_create` (`chat_handlers.py`) —
+verified by grep at the shipped head, against a positive control showing
+`chat_tags.py` carries the dispatch six times.
+
+The blocker is mechanical rather than a disagreement with the recommendation: the
+dispatch helper resolves its scheduler from a `request` argument that those three
+callers do not have, so funnelling them through it needs that dependency broken
+first. Until then a session can still enter a lane without the event firing — by
+inheriting a folder's status tag, or by channel slot filing — which is the exact
+failure mode this section was written to prevent. It is a known gap, not a solved
+one, and the choke point remains the shape to build.
 
 ## Migration plan
 

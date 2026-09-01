@@ -1647,7 +1647,7 @@ class TestScriptHookGovernance:
     @pytest.mark.asyncio
     async def test_a_denied_hook_never_spawns_a_subprocess(self, monkeypatch):
         monkeypatch.setattr(
-            hooks_mod, "_script_hooks_capability_denied", lambda sk: "capability disabled"
+            hooks_mod, "_script_hooks_capability_denied", lambda sk, app="": "capability disabled"
         )
 
         def _no_spawn(*a, **k):  # pragma: no cover - must not be reached
@@ -1663,7 +1663,7 @@ class TestScriptHookGovernance:
 
     @pytest.mark.asyncio
     async def test_the_deny_audit_never_breaks_the_caller(self, monkeypatch):
-        monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk: "nope")
+        monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk, app="": "nope")
         import kiro_crew.sel as sel_mod
 
         class _Sel:
@@ -1680,7 +1680,7 @@ class TestScriptHookGovernance:
         monkeypatch.setattr(
             hooks_mod,
             "_script_hooks_capability_denied",
-            lambda sk: seen.append(sk) or "denied",
+            lambda sk, app="": seen.append(sk) or "denied",
         )
         await run_script_hook(ScriptHook(id="h1", command="x"), "", {"session_key": "slot:9"})
         await run_script_hook(
