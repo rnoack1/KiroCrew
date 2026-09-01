@@ -4017,7 +4017,7 @@
       "errors": "Errors",
       "failed_to_load": "Failed to load {{section}}",
       "failed_to_load_hooks": "Failed to load hooks: {{error}}",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "Hooks run shell commands on chat events: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Tool hooks support matcher patterns to filter by tool name.",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "Hooks run shell commands on chat events: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged. Tool hooks support matcher patterns to filter by tool name; SessionLaneChanged fires when a session's board column changes.",
       "matcher_mode": "Matcher mode",
       "matcher_optional_e_g_deploy": "Matcher (optional, e.g. *deploy*)",
       "matcher_tool_filter_e_g_fs_write_git": "Matcher (tool filter, e.g. fs_write, @git/*)",
@@ -4035,7 +4035,13 @@
       "test_failed": "Test failed",
       "retry": "Retry",
       "show_last_error": "Show last error for {{name}}",
-      "test_failed_for": "Test failed for {{name}}"
+      "test_failed_for": "Test failed for {{name}}",
+      "matcher_lane_shape": "*added:9f2c1ab77e40;*",
+      "matcher_lane_help": "Wrap the column's tag id in wildcards, e.g. *added:9f2c1ab77e40;*, or use removed: for when a session leaves it. A bare column name matches nothing.",
+      "matcher_lane_pick": "Pick a column",
+      "matcher_lane_load_failed": "Could not load the board columns: {{error}}. Type the matcher by hand, or retry.",
+      "matcher_lane_matches_nothing": "This matches no column, so the hook will never fire. Pick a column, or include its tag id.",
+      "matcher_lane_retry": "Retry"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "A unique identifier for this workspace. Agents reference workspaces by name.",

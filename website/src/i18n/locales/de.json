@@ -10291,7 +10291,7 @@
       "filter_hooks": "Hooks filtern…",
       "hook_name": "Hook-Name",
       "hooks": "Hooks",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "Hooks führen Shell-Befehle bei Chat-Ereignissen aus: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Tool-Hooks unterstützen Abgleichmuster, um nach Tool-Namen zu filtern.",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "Hooks führen Shell-Befehle bei Chat-Ereignissen aus: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged. Tool-Hooks unterstützen Abgleichmuster, um nach Tool-Namen zu filtern; SessionLaneChanged wird ausgelöst, wenn sich die Board-Spalte einer Sitzung ändert.",
       "last_run": "Letzte Ausführung",
       "loading": "Wird geladen…",
       "matcher": "Abgleichmuster",
@@ -10312,7 +10312,7 @@
       "s": "s",
       "save": "Speichern",
       "script_hooks_fire_shell_commands_on_chat_lifecyc": "Skript-Hooks lösen Shell-Befehle bei Chat-Lebenszyklus-Ereignissen aus. PreToolUse-/PostToolUse-Hooks können nach Tool-Namensmuster filtern.",
-      "shell_commands_that_run_automatically_on_agent_e": "Shell-Befehle, die bei Agenten-Ereignissen automatisch ausgeführt werden",
+      "shell_commands_that_run_automatically_on_agent_e": "Shell-Befehle, die automatisch bei Agenten- und Sitzungsereignissen ausgeführt werden.",
       "source": "Quelle",
       "status": "Status",
       "test": "Testen",
@@ -10327,7 +10327,13 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "Wiederholen",
       "show_last_error": "Letzten Fehler für {{name}} anzeigen",
-      "test_failed_for": "Test für {{name}} fehlgeschlagen"
+      "test_failed_for": "Test für {{name}} fehlgeschlagen",
+      "matcher_lane_shape": "*added:9f2c1ab77e40;*",
+      "matcher_lane_help": "Setzen Sie die Tag-ID der Spalte in Wildcards, z. B. *added:9f2c1ab77e40;*, oder nutzen Sie removed: für das Verlassen. Ein bloßer Spaltenname trifft nichts.",
+      "matcher_lane_pick": "Spalte wählen",
+      "matcher_lane_load_failed": "Board-Spalten konnten nicht geladen werden: {{error}}. Geben Sie den Abgleich manuell ein oder versuchen Sie es erneut.",
+      "matcher_lane_matches_nothing": "Dies trifft keine Spalte, der Hook wird nie ausgelöst. Wählen Sie eine Spalte oder geben Sie ihre Tag-ID an.",
+      "matcher_lane_retry": "Wiederholen"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Eine eindeutige Kennung für diesen Workspace. Agenten verweisen über den Namen auf Workspaces.",

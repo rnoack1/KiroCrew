@@ -18,6 +18,8 @@ import { useArmedDelete } from '../hooks/useArmedDelete'
 import SortableHeader from '../components/SortableHeader'
 
 import { i18nT } from '../i18n/t'
+import { isLaneIdSafe, laneMatcherToken } from './hookEventWireValues'
+import { EVENTS } from './hookEventWireValues'
 interface Hook {
   id: string; name: string; event: string; matcher: string
   matcher_mode: string; command: string; skills: string[]
@@ -34,7 +36,6 @@ interface HookTestResult {
   stderr?: string
 }
 
-const EVENTS = ['AgentSpawn', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop']
 const MATCHER_MODES = ['glob', 'regex', 'contains']
 
 const EVENT_STYLE: Record<string, string> = {
@@ -43,11 +44,13 @@ const EVENT_STYLE: Record<string, string> = {
   PreToolUse: 'bg-aim-subtle text-aim border-aim/30',
   PostToolUse: 'bg-aim-subtle text-aim border-aim/30',
   Stop: 'bg-warn-subtle text-warn border-warn/30',
+  SessionLaneChanged: 'bg-accent/15 text-accent border-accent/30',
 }
 
 const EVENT_BADGE: Record<string, 'ok' | 'err' | 'warn' | 'aim'> = {
   AgentSpawn: 'ok', UserPromptSubmit: 'ok',
   PreToolUse: 'aim', PostToolUse: 'aim', Stop: 'warn',
+  SessionLaneChanged: 'aim',
 }
 
 const EVENT_ORDER = Object.fromEntries(EVENTS.map((e, i) => [e, i]))
@@ -70,6 +73,30 @@ function HookForm({ hook, onSave, onCancel }: {
   const [skills, setSkills] = useState<string[]>(hook?.skills || [])
   const [timeout, setTimeout_] = useState(hook?.timeout || 30)
   const isToolHook = event === 'PreToolUse' || event === 'PostToolUse'
+  // A bare lane name matches NOTHING: the matcher is whole-string and the context
+  // carries tag IDs, so the generic `*deploy*` example invites a silent no-op.
+  const isLaneHook = event === 'SessionLaneChanged'
+  // Only status tags are board lanes. Fetched so an author can pick a lane by NAME:
+  // ids are 12 hex characters and no other surface renders them.
+  const { data: laneTags = [], error: laneTagsErr, refetch: refetchLaneTags } = useQuery<{ id: string; name: string; status?: boolean }[]>({
+    queryKey: ['chat-tags-lanes'],
+    queryFn: () => api.chatTags(),
+    enabled: isLaneHook,
+  })
+  const statusLanes = useMemo(
+    () =>
+      (Array.isArray(laneTags) ? laneTags : []).filter(
+        t => t && t.status && t.id && isLaneIdSafe(t.id),
+      ),
+    [laneTags],
+  )
+  // Fires in EVERY matcher mode, and on a wrapped-but-wrong value like `*Done*`: the
+  // grammar carries tag ids, so a column NAME never matches however it is wrapped.
+  const laneMatcherMissesEverything =
+    isLaneHook &&
+    statusLanes.length > 0 &&
+    matcher.trim() !== '' &&
+    !statusLanes.some(lane => matcher.includes(lane.id))
   // Skills fire only for a standalone skills hook (no command) on
   // UserPromptSubmit/AgentSpawn — a command makes them inert, and other events
   // have no consumer for the injected directive.
@@ -85,7 +112,9 @@ function HookForm({ hook, onSave, onCancel }: {
   // Dynamic placeholder text per matcher mode
   const matcherPlaceholder = isToolHook
     ? i18nT('pages.hooksPage.matcher_tool_filter_e_g_fs_write_git')
-    : matcherMode === 'regex'
+    : isLaneHook
+      ? i18nT('pages.hooksPage.matcher_lane_shape')
+      : matcherMode === 'regex'
       ? i18nT('pages.hooksPage.matcher_placeholder_regex')
       : matcherMode === 'contains'
         ? i18nT('pages.hooksPage.matcher_placeholder_contains')
@@ -131,6 +160,51 @@ function HookForm({ hook, onSave, onCancel }: {
               onChange={setMatcherMode}
               aria-label={i18nT('pages.hooksPage.matcher_mode')}
             />
+          )}
+          {/* Persistent, not a placeholder: the shape rule is the only thing standing
+              between a typo and a hook that saves cleanly and never fires. */}
+          {isLaneHook && (
+            <p className="basis-full text-[12px] text-muted" data-testid="lane-matcher-help">
+              {i18nT('pages.hooksPage.matcher_lane_help')}
+            </p>
+          )}
+          {/* A SELECT, not a row of buttons: the lane count is whatever the board has,
+              and one click still writes the whole glob so no id is read or typed. */}
+          {isLaneHook && statusLanes.length > 0 && (
+            <div className="basis-full flex flex-wrap items-center gap-1.5" data-testid="lane-matcher-picker">
+              <SimpleSelect
+                options={statusLanes.map(lane => lane.id)}
+                optionLabels={statusLanes.map(lane => lane.name || lane.id)}
+                value=""
+                triggerFallback={i18nT('pages.hooksPage.matcher_lane_pick')}
+                onChange={id => setMatcher(laneMatcherToken(id))}
+                aria-label={i18nT('pages.hooksPage.matcher_lane_pick')}
+              />
+            </div>
+          )}
+          {isLaneHook && laneTagsErr && (
+            <div className="basis-full">
+              {/* askAgent off: the hand-off unmounts the page, which is why the page's
+                  own handoffSafe is false whenever a form is open. */}
+              <ErrorNotice
+                message={i18nT('pages.hooksPage.matcher_lane_load_failed', {
+                  error: laneTagsErr instanceof Error ? laneTagsErr.message : String(laneTagsErr),
+                })}
+                askAgent={false}
+              />
+              <Btn className="mt-1 h-6 px-2 text-[12px]" onClick={() => refetchLaneTags()}>
+                {i18nT('pages.hooksPage.matcher_lane_retry')}
+              </Btn>
+            </div>
+          )}
+          {laneMatcherMissesEverything && (
+            <p
+              className="basis-full text-[12px] text-warn"
+              role="status"
+              data-testid="lane-matcher-warning"
+            >
+              {i18nT('pages.hooksPage.matcher_lane_matches_nothing')}
+            </p>
           )}
           <div className="flex items-center gap-1.5 text-[13px] text-muted shrink-0">
             <span>{i18nT('pages.hooksPage.timeout')}</span>

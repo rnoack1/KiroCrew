@@ -10439,7 +10439,7 @@
       "filter_hooks": "Filtra gli hook…",
       "hook_name": "Nome dell'hook",
       "hooks": "Hook",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "Gli hook eseguono comandi shell in risposta agli eventi della chat: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Gli hook degli strumenti supportano criteri di corrispondenza per filtrare per nome dello strumento.",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "Gli hook eseguono comandi shell sugli eventi di chat: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged. Gli hook di strumento supportano pattern di corrispondenza per filtrare per nome dello strumento; SessionLaneChanged si attiva quando cambia la colonna della bacheca di una sessione.",
       "last_run": "Ultima esecuzione",
       "loading": "Caricamento…",
       "matcher": "Criterio di corrispondenza",
@@ -10460,7 +10460,7 @@
       "s": "s",
       "save": "Salva",
       "script_hooks_fire_shell_commands_on_chat_lifecyc": "Gli hook di script eseguono comandi shell sugli eventi del ciclo di vita della chat. Gli hook PreToolUse/PostToolUse possono filtrare per criterio sul nome dello strumento.",
-      "shell_commands_that_run_automatically_on_agent_e": "Comandi shell che vengono eseguiti automaticamente sugli eventi dell'agente",
+      "shell_commands_that_run_automatically_on_agent_e": "Comandi shell eseguiti automaticamente sugli eventi di agente e di sessione.",
       "source": "Origine",
       "status": "Stato",
       "test": "Prova",
@@ -10475,7 +10475,13 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "Riprova",
       "show_last_error": "Mostra l'ultimo errore di {{name}}",
-      "test_failed_for": "Test non riuscito per {{name}}"
+      "test_failed_for": "Test non riuscito per {{name}}",
+      "matcher_lane_shape": "*added:9f2c1ab77e40;*",
+      "matcher_lane_help": "Racchiudi l'id del tag della colonna tra wildcard, ad es. *added:9f2c1ab77e40;*, oppure usa removed: per l'uscita. Il solo nome della colonna non corrisponde a nulla.",
+      "matcher_lane_pick": "Scegli una colonna",
+      "matcher_lane_load_failed": "Non è stato possibile caricare le colonne della bacheca: {{error}}. Digita il filtro a mano o riprova.",
+      "matcher_lane_matches_nothing": "Non corrisponde a nessuna colonna, quindi l'hook non si attiverà mai. Scegli una colonna o indica il suo id di tag.",
+      "matcher_lane_retry": "Riprova"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Un identificatore univoco per questo workspace. Gli agenti fanno riferimento ai workspace tramite il nome.",

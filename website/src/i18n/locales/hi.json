@@ -10291,7 +10291,7 @@
       "filter_hooks": "हुक फ़िल्टर करें…",
       "hook_name": "हुक का नाम",
       "hooks": "हुक",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "हुक चैट इवेंट पर शेल कमांड चलाते हैं: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop। टूल हुक में टूल के नाम से फ़िल्टर करने के लिए मैचर पैटर्न का समर्थन है।",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "हुक्स चैट घटनाओं पर शेल कमांड चलाते हैं: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged। टूल हुक्स टूल के नाम से न्याय करने के लिऐ मैचर पैटर्न समर्थित करते हैं; SessionLaneChanged तब चलता है जब किसी सत्र की बोर्ड स्तंभ बदलती है।",
       "last_run": "आख़िरी रन",
       "loading": "लोड हो रहा है…",
       "matcher": "मैचर",
@@ -10312,7 +10312,7 @@
       "s": "s",
       "save": "सहेजें",
       "script_hooks_fire_shell_commands_on_chat_lifecyc": "स्क्रिप्ट हुक चैट लाइफ़साइकल इवेंट पर शेल कमांड चलाते हैं। PreToolUse/PostToolUse हुक टूल-नाम पैटर्न से फ़िल्टर कर सकते हैं।",
-      "shell_commands_that_run_automatically_on_agent_e": "एजेंट इवेंट पर अपने आप चलने वाले शेल कमांड",
+      "shell_commands_that_run_automatically_on_agent_e": "ऐजेंट और सत्र घटनाओं पर स्वतः चलने वाले शेल कमांड।",
       "source": "स्रोत",
       "status": "स्थिति",
       "test": "टेस्ट करें",
@@ -10327,7 +10327,13 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "फिर कोशिश करें",
       "show_last_error": "{{name}} की पिछली त्रुटि दिखाएँ",
-      "test_failed_for": "{{name}} के लिए परीक्षण विफल"
+      "test_failed_for": "{{name}} के लिए परीक्षण विफल",
+      "matcher_lane_shape": "*added:9f2c1ab77e40;*",
+      "matcher_lane_help": "स्तंभ की टैग आईडी को वाइल्डकार्ड में लपेटें, जैसे *added:9f2c1ab77e40;*, या छोडने के लिऐ removed: लिखें। केवल स्तंभ का नाम किसी से मेल नहीं खाता।",
+      "matcher_lane_pick": "स्तंभ चुनें",
+      "matcher_lane_load_failed": "बोर्ड स्तंभ लोड नहीं हो सके: {{error}}। मैचर स्वयं टाइप करें या पुनः प्रयास करें।",
+      "matcher_lane_matches_nothing": "यह किसी स्तंभ से मेल नहीं खाता, इसलिऐ हुक कभी नहीं चलेगा। कोई स्तंभ चुनें या उसकी टैग आईडी लिखें।",
+      "matcher_lane_retry": "पुनः प्रयास"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "इस वर्कस्पेस के लिए एक अनूठा पहचानकर्ता। एजेंट वर्कस्पेस को नाम से संदर्भित करते हैं।",

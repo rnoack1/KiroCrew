@@ -6566,7 +6566,7 @@
       "runs": "Runs",
       "s": "s",
       "save": "Save",
-      "shell_commands_that_run_automatically_on_agent_e": "Shell commands that run automatically on agent events",
+      "shell_commands_that_run_automatically_on_agent_e": "Shell commands that run automatically on agent and session events.",
       "status": "Status",
       "test": "Test",
       "test_result": "Test Result",

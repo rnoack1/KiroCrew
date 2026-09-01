@@ -10439,7 +10439,7 @@
       "filter_hooks": "Filtrer les hooks…",
       "hook_name": "Nom du hook",
       "hooks": "Hooks",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "Les hooks exécutent des commandes shell sur les événements de chat : AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Les hooks d’outils acceptent des motifs de correspondance pour filtrer par nom d’outil.",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "Les hooks exécutent des commandes shell sur les événements de chat : AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged. Les hooks d'outil prennent en charge des motifs de filtrage par nom d'outil ; SessionLaneChanged se déclenche lorsque la colonne du tableau d'une session change.",
       "last_run": "Dernière exécution",
       "loading": "Chargement…",
       "matcher": "Correspondance",
@@ -10460,7 +10460,7 @@
       "s": "s",
       "save": "Enregistrer",
       "script_hooks_fire_shell_commands_on_chat_lifecyc": "Les hooks de script déclenchent des commandes shell sur les événements du cycle de vie du chat. Les hooks PreToolUse/PostToolUse peuvent filtrer par motif de nom d’outil.",
-      "shell_commands_that_run_automatically_on_agent_e": "Commandes shell exécutées automatiquement lors des événements de l'agent",
+      "shell_commands_that_run_automatically_on_agent_e": "Commandes shell exécutées automatiquement lors des événements d'agent et de session.",
       "source": "Source",
       "status": "Statut",
       "test": "Tester",
@@ -10475,7 +10475,13 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "Réessayer",
       "show_last_error": "Afficher la dernière erreur de {{name}}",
-      "test_failed_for": "Échec du test pour {{name}}"
+      "test_failed_for": "Échec du test pour {{name}}",
+      "matcher_lane_shape": "*added:9f2c1ab77e40;*",
+      "matcher_lane_help": "Entourez l'id de tag de la colonne de jokers, par ex. *added:9f2c1ab77e40;*, ou utilisez removed: pour la sortie. Un simple nom de colonne ne correspond à rien.",
+      "matcher_lane_pick": "Choisir une colonne",
+      "matcher_lane_load_failed": "Impossible de charger les colonnes du tableau : {{error}}. Saisissez le filtre manuellement ou réessayez.",
+      "matcher_lane_matches_nothing": "Ceci ne correspond à aucune colonne, le hook ne se déclenchera jamais. Choisissez une colonne ou indiquez son id de tag.",
+      "matcher_lane_retry": "Réessayer"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Un identifiant unique pour cet espace de travail. Les agents référencent les espaces de travail par leur nom.",

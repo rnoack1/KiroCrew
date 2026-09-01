@@ -115,7 +115,7 @@ no endpoint: the preference never leaves the browser.
 | Knowledge | The document library: sources, sync, entities, graph | `?tab=knowledge` | `pages/knowledge/index.tsx` | `handlers/knowledge.py` | `GET /api/knowledge/items`, `POST /api/knowledge/sources`, `GET /api/knowledge/graph` |
 | Prompts | Reusable prompt entries from the registry | `?tab=prompts` | `pages/overview/PromptsTab.tsx` | `handlers/prompts.py` | `GET /api/prompts`, `GET /api/prompts/{name}` |
 | Steering | Always-injected steering documents | `?tab=steering` | `pages/overview/SteeringTab.tsx` | `handlers/steering.py` | `GET,POST /api/steering`, `PUT,DELETE /api/steering/{key}` |
-| Hooks | Event-triggered agent runs | `?tab=hooks` | `pages/HooksPage.tsx` | `handlers/hooks.py` | `GET,POST /api/hooks`, `PUT,DELETE /api/hooks/{hook_id}`, `GET /api/kiro-hooks` |
+| Hooks | Event-triggered agent runs, including `SessionLaneChanged` when a session's board lane changes | `?tab=hooks` | `pages/HooksPage.tsx` | `handlers/hooks.py` | `GET,POST /api/hooks`, `PUT,DELETE /api/hooks/{hook_id}`, `GET /api/kiro-hooks` |
 | Workflows | Saved dynamic-workflow definitions and their runs | `?tab=workflows` | `pages/overview/WorkflowLibraryTab.tsx` | `handlers/workflows.py` | `POST /api/workflows/run`, `GET,POST /api/workflows/definitions`, `POST /api/workflows/author` |
 
 `/agents`, `/mc-agents` and `/connections` are legacy paths that redirect here;
@@ -255,7 +255,7 @@ to Settings > Developer (`pages/settings/FeaturePreviewsSection.tsx`); the old
 | Feature | What it is | Reach it | Page | Handler | Endpoints |
 |---|---|---|---|---|---|
 | Logs | Full-page log viewer | `/logs` | `pages/LogsPage.tsx` | `handlers/updates.py` | `GET /api/logs`, `GET /api/stream` |
-| Hooks | Full-page hook manager | `/hooks` | `pages/HooksPage.tsx` | `handlers/hooks.py` | `GET,POST /api/hooks`, `GET /api/kiro-hooks` |
+| Hooks | Full-page hook manager; the event picker offers `SessionLaneChanged` for board-lane transitions | `/hooks` | `pages/HooksPage.tsx` | `handlers/hooks.py` | `GET,POST /api/hooks`, `GET /api/kiro-hooks` |
 | Webhooks | Inbound webhook tokens, contexts, run history | `/webhooks` (preview-gated) | `pages/WebhooksPage.tsx` | `handlers/hooks.py` | `GET /api/webhooks`, `POST /api/webhooks/tokens`, `POST /api/hooks/agent` |
 | Cloud launch | Provision a Kiro Crew EC2 instance in the user's account | Settings → Remote Instances → Set up a new one | `pages/settings/RemoteCrewPanel.tsx` | `handlers_cloud.py` | `GET /api/cloud/preflight`, `POST /api/cloud/launch`, `GET /api/cloud/iam-policy` |
 | Mobile connect | Pair a phone to this gateway | Left rail → **Connect your phone** (governed methods + QR); Settings → Security → mobile card (sign-in link only) | `App.tsx`, `components/MobileConnectModal.tsx`, `pages/settings/MobileLoginCard.tsx` | `handlers/mobile_connect.py`, `handlers/auth_mobile.py`, `handlers/tailnet_mobile.py` | `GET /api/mobile-connect/methods`, `POST /api/auth/mobile-link`, `POST /api/tailnet/mobile/qr` |

@@ -10143,7 +10143,7 @@
       "filter_hooks": "フックをフィルタ…",
       "hook_name": "フック名",
       "hooks": "フック",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "フックはチャットイベント（AgentSpawn、UserPromptSubmit、PreToolUse、PostToolUse、Stop）でシェルコマンドを実行します。ツールフックはマッチャーパターンでツール名でフィルタリングできます。",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "フックはチャットイベントでシェルコマンドを実行します：AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged。ツールフックはツール名で絞るマッチャーパターンに対応します。SessionLaneChanged はセッションのボードの列が変わったときに発火します。",
       "last_run": "最後の実行",
       "loading": "読み込み中…",
       "matcher": "マッチャー",
@@ -10164,7 +10164,7 @@
       "s": "秒",
       "save": "保存",
       "script_hooks_fire_shell_commands_on_chat_lifecyc": "スクリプトフックはチャットライフサイクルイベントでシェルコマンドを実行します。PreToolUse/PostToolUseフックはツール名パターンでフィルタできます。",
-      "shell_commands_that_run_automatically_on_agent_e": "エージェントイベントで自動的に実行されるシェルコマンド",
+      "shell_commands_that_run_automatically_on_agent_e": "エージェントとセッションのイベントで自動的に実行されるシェルコマンド。",
       "source": "ソース",
       "status": "ステータス",
       "test": "テスト",
@@ -10179,7 +10179,13 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "再試行",
       "show_last_error": "{{name}} の最新のエラーを表示",
-      "test_failed_for": "{{name}} のテストに失敗しました"
+      "test_failed_for": "{{name}} のテストに失敗しました",
+      "matcher_lane_shape": "*added:9f2c1ab77e40;*",
+      "matcher_lane_help": "列のタグ ID をワイルドカードで囲んでください（例：*added:9f2c1ab77e40;*）。退出には removed: を使います。列名だけでは何にも一致しません。",
+      "matcher_lane_pick": "列を選択",
+      "matcher_lane_load_failed": "ボードの列を読み込めませんでした：{{error}}。マッチャーを手入力するか、再試行してください。",
+      "matcher_lane_matches_nothing": "これはいずれの列にも一致しないため、フックは発火しません。列を選ぶか、そのタグ ID を含めてください。",
+      "matcher_lane_retry": "再試行"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "このワークスペースの一意な識別子。エージェントは名前でワークスペースを参照します。",

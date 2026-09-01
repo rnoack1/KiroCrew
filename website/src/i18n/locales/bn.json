@@ -10291,7 +10291,7 @@
       "filter_hooks": "হুক ফিল্টার করুন…",
       "hook_name": "হুকের নাম",
       "hooks": "Hooks",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "হুক চ্যাট ইভেন্টে শেল কমান্ড চালায়: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop। টুল হুক টুলের নাম দিয়ে ফিল্টার করার জন্য ম্যাচার প্যাটার্ন সমর্থন করে।",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "হুক চ্যাট ইভেন্টে শেল কমান্ড চালায়: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged। টুল হুক টুলের নাম দিয়ে ফিল্টার করার জন্য ম্যাচার প্যাটার্ন সমর্থন করে; SessionLaneChanged সেশনের বোর্ড কলাম বদলালে চালু হয়।",
       "last_run": "সর্বশেষ রান",
       "loading": "লোড হচ্ছে…",
       "matcher": "ম্যাচার",
@@ -10312,7 +10312,7 @@
       "s": "s",
       "save": "সংরক্ষণ",
       "script_hooks_fire_shell_commands_on_chat_lifecyc": "স্ক্রিপ্ট হুক চ্যাটের লাইফসাইকেল ইভেন্টে শেল কমান্ড চালায়। PreToolUse/PostToolUse হুক টুলের নামের প্যাটার্ন দিয়ে ফিল্টার করতে পারে।",
-      "shell_commands_that_run_automatically_on_agent_e": "এজেন্ট ইভেন্টে স্বয়ংক্রিয়ভাবে চলে এমন শেল কমান্ড",
+      "shell_commands_that_run_automatically_on_agent_e": "এজেন্ট ও সেশন ইভেন্টে স্বয়ংক্রিয়ভাবে চলা শেল কমান্ড।",
       "source": "সোর্স",
       "status": "স্ট্যাটাস",
       "test": "পরীক্ষা",
@@ -10327,7 +10327,13 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "আবার চেষ্টা করুন",
       "show_last_error": "{{name}}-এর সর্বশেষ ত্রুটি দেখান",
-      "test_failed_for": "{{name}}-এর পরীক্ষা ব্যর্থ"
+      "test_failed_for": "{{name}}-এর পরীক্ষা ব্যর্থ",
+      "matcher_lane_shape": "*added:9f2c1ab77e40;*",
+      "matcher_lane_help": "কলামের ট্যাগ আইডি ওয়াইল্ডকার্ডে মুড়ে দিন, যেমন *added:9f2c1ab77e40;*, অথবা বেরোলে removed: লিখুন। শুধু কলামের নাম কিছুই মেলাবে না।",
+      "matcher_lane_pick": "কলাম বাছুন",
+      "matcher_lane_load_failed": "বোর্ড কলাম লোড করা যায়নি: {{error}}। ম্যাচার নিজে লিখুন অথবা আবার চেষ্টা করুন।",
+      "matcher_lane_matches_nothing": "এটি কোনো কলামের সঙ্গে মিলছে না, তাই হুক কখনও চালু হবে না। একটি কলাম বাছুন অথবা তার ট্যাগ আইডি দিন।",
+      "matcher_lane_retry": "আবার চেষ্টা"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "এই ওয়ার্কস্পেসের জন্য একটি অনন্য শনাক্তকারী। এজেন্ট নাম দিয়ে ওয়ার্কস্পেস উল্লেখ করে।",

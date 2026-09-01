@@ -308,7 +308,7 @@ async def api_hook_test(request: web.Request) -> web.Response:
     """POST /api/hooks/{hook_id}/test — execute hook and return output."""
     # circular import: kiro_crew.hooks pulls dashboard state at module load, so
     # this handler defers the import to call time (matches _get_hook_store above).
-    from kiro_crew.hooks import HOOK_EVENT_STOP, run_script_hook  # noqa: F811
+    from kiro_crew.hooks import HOOK_EVENT_STOP  # noqa: F811
     from kiro_crew.platform import redact_via_context
 
     store = _get_hook_store(request.app["state"])
@@ -334,7 +334,7 @@ async def api_hook_test(request: web.Request) -> web.Response:
             "cwd": os.getcwd(),
             "assistant_text": context,
         }
-    result = await run_script_hook(hook, context, hook_event)
+    result = await store.run_and_publish(hook, context, hook_event)
     _sel().log_tool_invocation(
         session_key="dashboard:hook_test",
         agent="kirocrew",

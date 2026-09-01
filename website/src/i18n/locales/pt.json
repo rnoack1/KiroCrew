@@ -10439,7 +10439,7 @@
       "filter_hooks": "Filtrar hooks…",
       "hook_name": "Nome do hook",
       "hooks": "Hooks",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "Hooks executam comandos de shell em eventos de chat: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Hooks de ferramenta aceitam padrões de correspondência para filtrar por nome da ferramenta.",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "Os hooks executam comandos de shell em eventos de chat: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged. Os hooks de ferramenta aceitam padrões de correspondência para filtrar por nome da ferramenta; SessionLaneChanged é acionado quando a coluna do painel de uma sessão muda.",
       "last_run": "Última execução",
       "loading": "Carregando…",
       "matcher": "Correspondência",
@@ -10460,7 +10460,7 @@
       "s": "s",
       "save": "Salvar",
       "script_hooks_fire_shell_commands_on_chat_lifecyc": "Hooks de script disparam comandos de shell em eventos do ciclo de vida do chat. Hooks PreToolUse/PostToolUse podem filtrar por padrão de nome de ferramenta.",
-      "shell_commands_that_run_automatically_on_agent_e": "Comandos de shell executados automaticamente em eventos do agente",
+      "shell_commands_that_run_automatically_on_agent_e": "Comandos de shell executados automaticamente em eventos de agente e de sessão.",
       "source": "Origem",
       "status": "Status",
       "test": "Testar",
@@ -10475,7 +10475,13 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "Tentar novamente",
       "show_last_error": "Mostrar o último erro de {{name}}",
-      "test_failed_for": "Falha no teste de {{name}}"
+      "test_failed_for": "Falha no teste de {{name}}",
+      "matcher_lane_shape": "*added:9f2c1ab77e40;*",
+      "matcher_lane_help": "Envolva o id da etiqueta da coluna em curingas, por ex. *added:9f2c1ab77e40;*, ou use removed: para a saída. Só o nome da coluna não corresponde a nada.",
+      "matcher_lane_pick": "Escolher coluna",
+      "matcher_lane_load_failed": "Não foi possível carregar as colunas do painel: {{error}}. Digite o filtro manualmente ou tente de novo.",
+      "matcher_lane_matches_nothing": "Isto não corresponde a nenhuma coluna, portanto o hook nunca será acionado. Escolha uma coluna ou inclua o id da etiqueta.",
+      "matcher_lane_retry": "Tentar de novo"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Um identificador único para este workspace. Agentes referenciam workspaces pelo nome.",

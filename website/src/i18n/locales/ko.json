@@ -10143,7 +10143,7 @@
       "filter_hooks": "훅 필터…",
       "hook_name": "훅 이름",
       "hooks": "훅",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "훅은 채팅 이벤트(AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop)에서 셸 명령을 실행합니다. 도구 훅은 매처 패턴으로 도구 이름을 필터링할 수 있습니다.",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "훅은 대화 이벤트에서 셸 명령을 실행합니다: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged. 도구 훅은 도구 이름으로 필터링하는 매칭 패턴을 지원합니다. SessionLaneChanged는 세션의 보드 열이 바뀌면 실행됩니다.",
       "last_run": "마지막 실행",
       "loading": "불러오는 중…",
       "matcher": "매처",
@@ -10164,7 +10164,7 @@
       "s": "초",
       "save": "저장",
       "script_hooks_fire_shell_commands_on_chat_lifecyc": "스크립트 훅은 채팅 수명 주기 이벤트에서 셸 명령을 실행합니다. PreToolUse/PostToolUse 훅은 도구 이름 패턴으로 필터링할 수 있습니다.",
-      "shell_commands_that_run_automatically_on_agent_e": "에이전트 이벤트에서 자동으로 실행되는 셸 명령",
+      "shell_commands_that_run_automatically_on_agent_e": "에이전트 및 세션 이벤트에서 자동으로 실행되는 셸 명령입니다.",
       "source": "소스",
       "status": "상태",
       "test": "테스트",
@@ -10179,7 +10179,13 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "다시 시도",
       "show_last_error": "{{name}}의 마지막 오류 표시",
-      "test_failed_for": "{{name}} 테스트 실패"
+      "test_failed_for": "{{name}} 테스트 실패",
+      "matcher_lane_shape": "*added:9f2c1ab77e40;*",
+      "matcher_lane_help": "열의 태그 ID를 와일드카드로 개싸십시오(예: *added:9f2c1ab77e40;*). 나가는 경우는 removed: 를 사용합니다. 열 이름만으로는 아무것도 일치하지 않습니다.",
+      "matcher_lane_pick": "열 선택",
+      "matcher_lane_load_failed": "보드 열을 불러오지 못했습니다: {{error}}. 매칭을 직접 입력하거나 다시 시도하십시오.",
+      "matcher_lane_matches_nothing": "어느 열과도 일지하지 않으묀로 훅이 실행되지 않습니다. 열을 선택하거나 태그 ID를 포함하십시오.",
+      "matcher_lane_retry": "다시 시도"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "이 워크스페이스의 고유 식별자입니다. 에이전트는 이름으로 워크스페이스를 참조합니다.",

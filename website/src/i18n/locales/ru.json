@@ -10587,7 +10587,7 @@
       "filter_hooks": "Фильтр хуков…",
       "hook_name": "Название хука",
       "hooks": "Хуки",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "Хуки выполняют shell-команды по событиям чата: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Хуки инструментов поддерживают шаблоны условий для фильтрации по имени инструмента.",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "Хуки выполняют команды оболочки при событиях чата: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged. Хуки инструментов поддерживают шаблоны для фильтрации по имени инструмента; SessionLaneChanged срабатывает, когда меняется столбец сеанса на доске.",
       "last_run": "Последний запуск",
       "loading": "Загрузка…",
       "matcher": "Условие",
@@ -10608,7 +10608,7 @@
       "s": "s",
       "save": "Сохранить",
       "script_hooks_fire_shell_commands_on_chat_lifecyc": "Скриптовые хуки запускают shell-команды по событиям жизненного цикла чата. Хуки PreToolUse/PostToolUse умеют фильтровать по шаблону имени инструмента.",
-      "shell_commands_that_run_automatically_on_agent_e": "Команды оболочки, которые запускаются автоматически по событиям агента",
+      "shell_commands_that_run_automatically_on_agent_e": "Команды оболочки, автоматически выполняемые при событиях агента и сеанса.",
       "source": "Источник",
       "status": "Статус",
       "test": "Проверить",
@@ -10623,7 +10623,13 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "Повторить",
       "show_last_error": "Показать последнюю ошибку для {{name}}",
-      "test_failed_for": "Тест для {{name}} не пройден"
+      "test_failed_for": "Тест для {{name}} не пройден",
+      "matcher_lane_shape": "*added:9f2c1ab77e40;*",
+      "matcher_lane_help": "Заключите идентификатор тега столбца в подстановочные знаки, например *added:9f2c1ab77e40;*, или removed: для выхода из него. Одно имя столбца ничего не найдёт.",
+      "matcher_lane_pick": "Выбрать столбец",
+      "matcher_lane_load_failed": "Не удалось загрузить столбцы доски: {{error}}. Введите фильтр вручную или повторите попытку.",
+      "matcher_lane_matches_nothing": "Это не соответствует ни одному столбцу, поэтому хук никогда не сработает. Выберите столбец или укажите его идентификатор тега.",
+      "matcher_lane_retry": "Повторить"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Уникальный идентификатор этой рабочей области. Агенты ссылаются на рабочие области по имени.",
