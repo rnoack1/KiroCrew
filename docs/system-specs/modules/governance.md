@@ -1525,6 +1525,52 @@ caller to reach for the blocking path from the event loop, reintroducing the wed
 the non-blocking rule exists to prevent. A surface that needs strict
 read-your-writes should add it deliberately, with its own tests.
 
+### Tracked: resolution is synchronous, and two callers work around it
+
+**Owned by this module. Not a gap in the callers that route around it.**
+
+`governance_permits` resolves synchronously: `_dir_fingerprint` walks `profiles/`
+(`Path.iterdir`) and a reload additionally reads each profile JSON. On slow or
+contended storage that stalls whatever thread resolves it — including the gateway
+event loop, for any `async` caller that resolves inline.
+
+Re-derive the caller census rather than trusting a number here, because it drifts
+on any unrelated commit that adds a call site:
+`grep -rn 'governance_permits(' src/ --include=*.py`. The invariant that does not
+drift: **exactly two call sites — both in `hooks.py` — are offloaded** with
+`asyncio.to_thread`, and both are SCOPED to the `SessionLaneChanged` event: the four
+pre-existing hook events resolve inline exactly as they do without this change, so the
+offload is not an all-event behaviour change. Every other caller resolves inline,
+including `dashboard/chat_runner.py` on the async turn path.
+
+Two consequences follow, and both belong to this module rather than to the hooks
+module that worked around the first one:
+
+- **Per-caller `to_thread` is a workaround, not the fix.** The cause-level remedy
+  is here: make resolution itself non-blocking, or cache the fingerprint, so no
+  caller needs its own thread hop. Until then each inline `async` caller keeps
+  the stall.
+- **Thread-safety is load-bearing.** Because those two sites resolve off-loop,
+  concurrent hook fires can enter `governance_permits` from several worker
+  threads at once — for **every** hook event, not only the one whose feature
+  introduced the offload. The store is built for it (a `threading.Lock` acquired
+  non-blocking, and a frozen snapshot published in one assignment so a lock-free
+  reader cannot observe a torn state). Two tests in
+  [`test/test_governance_gate.py`](../../../test/test_governance_gate.py) cover
+  it, and they are **not interchangeable**:
+  `TestTheOffloadedGateIsConcurrencySafe` monkeypatches the resolver, so it pins
+  the gate's own thread behaviour (verdict consistency, and `PlatformCompositionError`
+  still failing closed across the thread hop) but never enters the store;
+  `TestTheRealStoreIsDrivenConcurrently` drives the REAL store — real lock, real
+  `_dir_fingerprint` walk, real reload, with the profiles directory mutating
+  under the readers — which is what makes this bullet a tested contract rather
+  than prose. Both live beside this module's own tests, so removing the feature
+  that first needed them cannot delete the guard.
+
+**Status: deferred, deliberately.** Recorded here so the remedy has a home in the
+owning module instead of living only as a comment in a consumer. Anyone changing
+profile resolution should treat both bullets as requirements on the change.
+
 ## Enforcement planes
 
 > **MCP App-originated tool calls.** The MCP Apps callback path
