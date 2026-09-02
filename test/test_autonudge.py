@@ -4180,7 +4180,9 @@ class TestAutonudgeDisabledSettingLink:
 
         app = self._app(monkeypatch)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.patch("/api/autonudge/loop-1", json={"message": "x"})
+            resp = await client.patch(
+                "/api/autonudge/loop-1", json={"message": "x", "expect_fingerprint": "fp-test"}
+            )
             assert resp.status == 503
             data = await resp.json()
             assert data["code"] == "autonudge_disabled"
@@ -4343,7 +4345,8 @@ class TestAutonudgeUpdateChokepoint:
         secret = "AKIAIOSFODNN7EXAMPLE"
         async with TestClient(TestServer(app)) as client:
             resp = await client.patch(
-                "/api/autonudge/loop-1", json={"message": f"poll with key {secret}"}
+                "/api/autonudge/loop-1",
+                json={"message": f"poll with key {secret}", "expect_fingerprint": "fp-test"},
             )
             assert resp.status == 200
         stored = svc.update.await_args.kwargs["message"]
@@ -4359,7 +4362,9 @@ class TestAutonudgeUpdateChokepoint:
         svc = self._fake_svc()
         app = self._client_app(monkeypatch, svc)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.patch("/api/autonudge/loop-1", json={"message": probe})
+            resp = await client.patch(
+                "/api/autonudge/loop-1", json={"message": probe, "expect_fingerprint": "fp-test"}
+            )
             assert resp.status == 200
         stored = svc.update.await_args.kwargs["message"]
         assert "evil.example.com/collect" not in stored
@@ -4372,7 +4377,10 @@ class TestAutonudgeUpdateChokepoint:
         svc = self._fake_svc()
         app = self._client_app(monkeypatch, svc)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.patch("/api/autonudge/loop-1", json={"message": "x" * 8001})
+            resp = await client.patch(
+                "/api/autonudge/loop-1",
+                json={"message": "x" * 8001, "expect_fingerprint": "fp-test"},
+            )
             assert resp.status == 400
         svc.update.assert_not_awaited()
 
@@ -4385,7 +4393,9 @@ class TestAutonudgeUpdateChokepoint:
         app = self._client_app(monkeypatch, svc)
         async with TestClient(TestServer(app)) as client:
             for bad in (123, ["x"], {"a": 1}):
-                resp = await client.patch("/api/autonudge/loop-1", json={"message": bad})
+                resp = await client.patch(
+                    "/api/autonudge/loop-1", json={"message": bad, "expect_fingerprint": "fp-test"}
+                )
                 assert resp.status == 400, f"message={bad!r} gave {resp.status}"
         svc.update.assert_not_awaited()
 
@@ -4476,7 +4486,9 @@ class TestAutonudgeUpdateChokepoint:
         fake_sel.log_tool_invocation = lambda **kw: events.append(kw)
         monkeypatch.setattr(_authz, "sel", lambda: fake_sel)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.patch("/api/autonudge/nope", json={"message": "x"})
+            resp = await client.patch(
+                "/api/autonudge/nope", json={"message": "x", "expect_fingerprint": "fp-test"}
+            )
             assert resp.status == 404
         assert [e for e in events if e.get("outcome") == "denied"], events
 
@@ -4504,7 +4516,10 @@ class TestAutonudgeUpdateChokepoint:
         fake_sel.log_tool_invocation = _boom
         monkeypatch.setattr(_authz, "sel", lambda: fake_sel)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.patch("/api/autonudge/loop-1", json={"message": "revised"})
+            resp = await client.patch(
+                "/api/autonudge/loop-1",
+                json={"message": "revised", "expect_fingerprint": "fp-test"},
+            )
             assert resp.status == 503
             assert "audit" in (await resp.json())["error"].lower()
         svc.update.assert_not_awaited()

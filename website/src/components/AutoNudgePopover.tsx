@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+
 import { useQuery } from '@tanstack/react-query'
 import { Goal, X } from 'lucide-react'
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
@@ -54,6 +55,52 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   const [maxCyclesInput, setMaxCyclesInput] = useState(() => String(loop?.max_cycles || 0))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  // `ignored` is the server declining the submitted text; `kept` is the user declining to
+  // overwrite. One state, not two booleans, since the two can never be true at once.
+  const [saveNotice, setSaveNotice] = useState<'ignored' | 'kept' | null>(null)
+  // Armed when Save would overwrite a REDACTED goal with the mask the user was shown.
+  const [confirmOverwrite, setConfirmOverwrite] = useState(false)
+  // Render scope, not save-local: the confirm must disappear the moment the edit is
+  // reverted, or a settings-only save carries a destructive "replace" label.
+  // Whether the USER typed in the goal textarea this open. The goal patch is gated on
+  // this, never on comparing against a `loop` a live update can replace underneath us.
+  const goalEdited = useRef(false)
+  // Latched at OPEN, because both inputs below are live: a websocket update replacing `loop`
+  // with a newer clean goal must neither disarm the gate nor become its own baseline.
+  const [redactedAtOpen, setRedactedAtOpen] = useState(false)
+  const [servedAtOpen, setServedAtOpen] = useState<string | null>(null)
+  // The goal the CONFIRM was armed on, latched when the gate appears. A render-time check
+  // cannot close the race: the live goal can move between the read and the click.
+  const [confirmArmedFor, setConfirmArmedFor] = useState<string | null>(null)
+  // Re-arming is otherwise signalled ONLY by the preview text changing, which a screen
+  // reader is never told, so the gate silently swallows the click that looked like a yes.
+  const [confirmRearmed, setConfirmRearmed] = useState(false)
+  // The BASELINE the confirm was armed on. Latched apart from the text above, which is a
+  // redacted projection two different goals can share and so cannot identify one.
+  const [confirmArmedFingerprint, setConfirmArmedFingerprint] = useState<string | null>(null)
+  // Both arms require an actual edit: `save` gates the patch on `goalEdited.current`, so
+  // arming without one promises a destruction that cannot happen.
+  const editsRedactedGoal =
+    goalEdited.current &&
+    (Boolean(loop?.message_redacted) || redactedAtOpen) &&
+    message !== (loop?.message ?? '')
+  // The stored goal changed under an edit already in progress, so saving the typed text
+  // would discard a goal this user never saw. Same irreversibility, same explicit act.
+  const goalMovedUnderEdit =
+    goalEdited.current && servedAtOpen !== null && (loop?.message ?? '') !== servedAtOpen
+  const needsOverwriteConfirm = editsRedactedGoal || goalMovedUnderEdit
+  const confirmBlocked = saving || !message.trim()
+  // The confirm lives BELOW the action row, never in Save's position: swapping it in
+  // where Save was let a double-click land on it, defeating the gate it exists to be.
+  const confirmPending = confirmOverwrite && needsOverwriteConfirm
+  const dismissRef = useRef<HTMLButtonElement | null>(null)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+
+  // Disabling Save drops focus to <body>, so land it on the arm that WRITES NOTHING -- the
+  // keep-stored arm still PATCHes, so a habituated second Enter there commits a partial save.
+  useEffect(() => {
+    if (confirmPending) dismissRef.current?.focus()
+  }, [confirmPending])
   // Watches armed on this slot, read through the SHARED `cron-jobs` query rather
   // than a private fetch. That key is invalidated by the websocket hook, so a
   // watch deleted or paused elsewhere disappears from an open popover instead of
@@ -126,7 +173,16 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   useEffect(() => {
     if (!open) return
     hasEdited.current = false
+    goalEdited.current = false
+    // Latched HERE, at open, not at the first keystroke: a live update landing between the
+    // render and that keystroke would otherwise become its own baseline and pass unnoticed.
+    setRedactedAtOpen(Boolean(loop?.message_redacted))
+    setServedAtOpen(loop?.message ?? '')
     setError('')
+    // Reset the transient save state too: an armed confirmation surviving a dismiss
+    // would let the next Save overwrite a redacted goal with no fresh confirmation.
+    setConfirmOverwrite(false)
+    setSaveNotice(null)
     if (loop) {
       // `||` (not `??`) is deliberate: a loop with idle_secs/max_cycles of 0
       // or an empty message shows the 60 / 0 / default template.
@@ -165,7 +221,27 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `draftToPersist` is a pure transform of the ref snapshot it is handed, redeclared each render, so its identity carries no information the deps above miss. Depending on it would restart the debounce timer on every unrelated re-render — the coalescing this effect exists for.
   }, [open, slotKey, message, idleInput, maxCyclesInput, loop])
 
-  async function save() {
+  async function save(opts?: { keepStoredGoal?: boolean }) {
+    // ``=== true`` on purpose: a call site that forwards a DOM event as the first
+    // argument must never enable this, only an explicit caller.
+    const keepStoredGoal = opts?.keepStoredGoal === true
+    // The overwrite is IRREVERSIBLE and the server cannot return the original, so an
+    // edit to a redacted goal needs an explicit act, not passive copy the user skims.
+    if (needsOverwriteConfirm && !confirmOverwrite && !keepStoredGoal) {
+      setConfirmArmedFor(loop?.message ?? '')
+      setConfirmArmedFingerprint(loop?.message_fingerprint ?? '')
+      setConfirmOverwrite(true)
+      return
+    }
+    // Past the gate, the stored goal must still be the one the confirm was armed on: a
+    // click answering a question about text no longer there re-arms instead of committing.
+    if (confirmOverwrite && !keepStoredGoal && (loop?.message ?? '') !== confirmArmedFor) {
+      setConfirmArmedFor(loop?.message ?? '')
+      setConfirmArmedFingerprint(loop?.message_fingerprint ?? '')
+      setConfirmRearmed(true)
+      return
+    }
+    setConfirmRearmed(false)
     setSaving(true)
     setError('')
     try {
@@ -174,12 +250,51 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
       const idle_secs = parseIdle(idleInput)
       const max_cycles = parseCycles(maxCyclesInput)
       const body = JSON.stringify({ slot_key: slotKey, message, idle_secs, max_cycles })
+      // The GET that populated `loop.message` returns a SCRUBBED projection, so echoing
+      // it back unconditionally would overwrite the stored message with its redaction.
+      const patch: Record<string, unknown> = { idle_secs, max_cycles, active: true }
+      if (loop && !keepStoredGoal && goalEdited.current && message !== (loop.message ?? '')) {
+        patch.message = message
+        // The baseline the confirm was ARMED on, never the live one, which carries the newer
+        // goal's own token; read only while the gate is up so no latch outlives its confirm.
+        const armed = confirmOverwrite ? confirmArmedFingerprint : null
+        patch.expect_fingerprint = armed ?? loop.message_fingerprint ?? ''
+      }
       const resp = loop
-        ? await fetch(`/api/autonudge/${loop.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, idle_secs, max_cycles, active: true }) })
+        ? await fetch(`/api/autonudge/${loop.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) })
         : await fetch('/api/autonudge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
       const data = await resp.json()
+      if (resp.status === 409) {
+        // Not a failed save: the newer goal is intact and the user's view was stale.
+        setConfirmOverwrite(false)
+        setConfirmArmedFor(null)
+        setConfirmArmedFingerprint(null)
+        setError(data.error || `HTTP ${resp.status}`)
+        return
+      }
       if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`)
+      // A 200 can still have kept the stored goal, so surface it and stay open rather
+      // than reporting a save that did not fully happen.
+      setConfirmOverwrite(false)
+      if (data.message_ignored === true) {
+        setSaveNotice('ignored')
+        // The confirm button the user pressed unmounts with the gate, so focus would fall
+        // to <body> here too; the notice below is announced via role="status".
+        textareaRef.current?.focus()
+        onChange(data.loop)
+        return
+      }
       onChange(data.loop)
+      if (keepStoredGoal) {
+        // NOT `ignored`: nothing was ignored, the user declined the overwrite, and that
+        // notice would blame a text match and ask for the retry they just refused.
+        setSaveNotice('kept')
+        // The user is still editing: closing reseeds the textarea from the served
+        // projection on reopen, and no draft covers it while a loop exists.
+        textareaRef.current?.focus()
+        return
+      }
+      setSaveNotice(null)
       onOpenChange(false)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e))
@@ -259,7 +374,19 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
           {loop?.active && loop.cycle_count > 0 ? cycleText : null}
         </button>
       </PopoverTrigger>
-      <PopoverContent side="top" align="start" className="w-[420px] p-4 text-[12px]">
+      <PopoverContent
+        side="top"
+        align="start"
+        className="w-[420px] max-w-[calc(100vw-2rem)] p-4 text-[12px]"
+        onEscapeKeyDown={e => {
+          // Escape is the habitual CANCEL, but closing the popover discards the typed
+          // goal, which no draft covers while a loop exists. Cancel the gate instead.
+          if (!confirmPending) return
+          e.preventDefault()
+          setConfirmOverwrite(false)
+          textareaRef.current?.focus()
+        }}
+      >
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2 font-medium text-text">
             <Goal size={14} className={loop?.active ? 'text-accent' : 'text-muted'} />
@@ -314,10 +441,34 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
         )}
 
         <div className="text-muted text-[11px] mb-1">{i18nT('components.autoNudgePopover.goal_description')}</div>
+        {loop?.message_redacted && (
+          <div role="status" data-testid="autonudge-redacted-notice" className="text-warn text-[12px] font-medium mb-1">
+            {/* One line per sentence, at body size: the irreversibility warning read as
+                fine print and sat mid-paragraph where a skimming reader missed it. Split
+                on the terminator so bn/hi danda works too, not on any locale's wording. */}
+            {i18nT('components.autoNudgePopover.message_redacted_notice')
+              .split(/(?<=[.।])\s+/)
+              .filter(Boolean)
+              .map((sentence, i) => (
+                <div key={i} className={i === 0 ? '' : 'mt-1'}>
+                  {sentence}
+                </div>
+              ))}
+          </div>
+        )}
         <textarea
+          ref={textareaRef}
           aria-label={i18nT('components.autoNudgePopover.goal_description')}
           value={message}
-          onChange={e => { hasEdited.current = true; setMessage(e.target.value) }}
+          onChange={e => {
+            hasEdited.current = true
+            goalEdited.current = true
+            // An armed confirmation answers the text it was armed FOR. Reverting to the
+            // redacted copy and editing again reused it, overwriting with no second ask.
+            setConfirmOverwrite(false)
+            setSaveNotice(null)
+            setMessage(e.target.value)
+          }}
           rows={6}
           className="w-full bg-bg border border-border rounded p-2 text-[12px] font-mono resize-y mb-3 text-text"
           placeholder={i18nT('components.autoNudgePopover.describe_what_you_want_the_agent_to_accomplish')}
@@ -358,6 +509,18 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
           </div>
         )}
 
+        {saveNotice === 'ignored' && (
+          <div role="status" data-testid="autonudge-ignored-fields" className="text-warn text-[11px] mb-2">
+            {i18nT('components.autoNudgePopover.ignored_fields_notice')}
+          </div>
+        )}
+
+        {saveNotice === 'kept' && (
+          <div role="status" data-testid="autonudge-kept-stored-goal" className="text-muted text-[11px] mb-2">
+            {i18nT('components.autoNudgePopover.kept_stored_goal_notice')}
+          </div>
+        )}
+
         {/* No hand-off: the popover holds the unsaved goal message, idle and max-cycle inputs. */}
         <ErrorNotice
           variant="inline"
@@ -378,13 +541,118 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             </button>
           )}
           <button
-            onClick={save}
-            disabled={saving || !message.trim()}
+            onClick={() => save()}
+            disabled={saving || !message.trim() || confirmPending}
             className="px-3 py-1 rounded bg-accent text-accent-fg border-none cursor-pointer disabled:opacity-50 hover:bg-accent/90"
           >
             {loop ? i18nT('components.autoNudgePopover.save') : i18nT('components.autoNudgePopover.start_loop')}
           </button>
         </div>
+        {confirmPending && (
+          <div className="flex flex-col items-end gap-2 mt-2">
+            {confirmRearmed && (
+              <p
+                role="status"
+                data-testid="autonudge-confirm-rearmed"
+                className="m-0 text-warn text-[12px] font-medium"
+              >
+                {i18nT('components.autoNudgePopover.confirm_rearmed_notice')}
+              </p>
+            )}
+            <p role="status" data-testid="autonudge-confirm-question" className="m-0 text-warn text-[12px]">
+              {/* Moved wins when BOTH hold: only this arm names a goal the user has never
+                  read, and the redacted arm's amber notice above still supplies its why. */}
+              {i18nT(
+                goalMovedUnderEdit
+                  ? 'components.autoNudgePopover.confirm_overwrite_moved_question'
+                  : 'components.autoNudgePopover.confirm_overwrite_question'
+              )}
+            </p>
+            {goalMovedUnderEdit && (
+              // The choice is irreversible and the newer text is in hand here, so show it
+              // rather than asking the user to discard something they have never read.
+              <p
+                data-testid="autonudge-moved-goal-preview"
+                className="m-0 max-w-full self-stretch text-text text-[12px] break-words opacity-80 max-h-32 overflow-y-auto"
+              >
+                {/* LABELLED: unlabelled text read as the user's own pending edit rather than
+                    the stored goal being discarded. One key, so a translator can reorder it. */}
+                {i18nT('components.autoNudgePopover.moved_goal_preview', {
+                  // Shown IN FULL and scrolled rather than truncated: the click authorises
+                  // destroying all of it, so an elided tail hides part of the decision.
+                  goal: confirmArmedFor ?? '',
+                })}
+              </p>
+            )}
+            {/* Column unconditionally: the breakpoint keys on the VIEWPORT, but this row
+                lives in a fixed 420px popover, so a wide screen wrapped long labels. */}
+            <div className="flex flex-col gap-2 w-full">
+              <button
+                ref={dismissRef}
+                data-testid="autonudge-dismiss-overwrite"
+                onClick={() => {
+                  // The WRITE-FREE exit: both other buttons PATCH, and the only silent
+                  // dismissal was Escape, which DISCARDS the typed goal.
+                  setConfirmOverwrite(false)
+                  textareaRef.current?.focus()
+                }}
+                onKeyDown={e => {
+                  if ((e.key === 'Enter' || e.key === ' ') && e.repeat) e.preventDefault()
+                }}
+                // GHOST, not filled: this is the only arm that writes NOTHING, so it must
+                // not share a shape with the arm that saves the other settings.
+                className="px-3 py-1 rounded bg-transparent text-muted border-none underline cursor-pointer hover:text-text"
+              >
+                {i18nT('components.autoNudgePopover.dismiss_without_saving')}
+              </button>
+              <button
+                data-testid="autonudge-decline-overwrite"
+                onClick={() => {
+                  // Dismiss the gate ONLY. Restoring the served text here discarded the
+                  // user's typed goal, which no draft covers while a loop exists.
+                  setConfirmOverwrite(false)
+                  // This button unmounts with the gate, so focus would fall to <body> on
+                  // the gate's own SAFE path. Land it on the text the user was editing.
+                  textareaRef.current?.focus()
+                  // Answers the GOAL question, not the whole form: persist the other
+                  // settings so a changed interval is not silently dropped.
+                  save({ keepStoredGoal: true })
+                }}
+                onKeyDown={e => {
+                  // Same guard as the overwrite button: this one is focused on mount, so
+                  // a repeating Enter from Save would otherwise dismiss the gate unseen.
+                  if ((e.key === 'Enter' || e.key === ' ') && e.repeat) e.preventDefault()
+                }}
+                // OUTLINED: it does write (the other settings), so it is not the ghost
+                // arm, and it is not destructive, so it is not the filled warn arm.
+                className="px-3 py-1 rounded bg-card text-text border border-border cursor-pointer hover:opacity-90"
+              >
+                {i18nT('components.autoNudgePopover.keep_original_goal')}
+              </button>
+              <button
+                data-testid="autonudge-confirm-overwrite"
+                onClick={() => {
+                  if (confirmBlocked) return
+                  save()
+                }}
+                onKeyDown={e => {
+                  if ((e.key === 'Enter' || e.key === ' ') && e.repeat) e.preventDefault()
+                }}
+                // Truly disabled, not aria-disabled: an empty goal made this button swallow
+                // the click silently, which reads as broken. The title names the reason.
+                disabled={confirmBlocked}
+                title={confirmBlocked && !message.trim() ? i18nT('components.autoNudgePopover.set_a_goal') : undefined}
+                className={`px-3 py-1 rounded bg-warn text-warn-fg border-none cursor-pointer hover:bg-warn/90 ${confirmBlocked ? 'opacity-50' : ''}`}
+              >
+                {i18nT(
+                  goalMovedUnderEdit
+                    ? 'components.autoNudgePopover.confirm_overwrite_moved'
+                    : 'components.autoNudgePopover.confirm_overwrite_masked'
+                )}
+              </button>
+            </div>
+          </div>
+        )}
       </PopoverContent>
     </Popover>
   )

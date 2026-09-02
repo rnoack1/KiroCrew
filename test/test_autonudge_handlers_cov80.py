@@ -21,7 +21,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
-from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
+from kiro_crew.autonudge import AutoNudgeService, AutoNudgeStoreUnvetted, NudgeLoop
 from kiro_crew.dashboard.handlers import autonudge as h
 from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
 
@@ -570,7 +570,7 @@ async def test_legacy_patch_rejects_a_structured_monitor_id(
         "PATCH",
         "/api/autonudge/mon-1",
         match={"loop_id": "mon-1"},
-        body={"message": "legacy overwrite", "active": False},
+        body={"message": "legacy overwrite", "active": False, "expect_fingerprint": "fp-test"},
     )
 
     response = await h.api_autonudge_update(request)
@@ -578,6 +578,80 @@ async def test_legacy_patch_rejects_a_structured_monitor_id(
     assert response.status == 409
     assert _body(response)["code"] == "structured_monitor_requires_monitor_api"
     legacy_update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_message_patch_without_a_fingerprint_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GPT 5.6 (BLOCKING): the baseline check is SKIPPED at ``None``, not failed.
+
+    The service gates on ``expect_fingerprint is not None``, so an absent key lets an
+    edited stale goal overwrite one changed concurrently. Refused before the write.
+    """
+    _svc(monkeypatch, _FakeSvc([_loop("lp-1")]))
+    # A VALID success return, so without the guard the handler answers 200 and this test
+    # fails on the status assertion rather than on an unpack error from a bare mock.
+    update = AsyncMock(return_value=(_loop("lp-1"), None, 200))
+    monkeypatch.setattr(h, "authorize_and_update_nudge", update)
+    request = _mk(
+        "PATCH",
+        "/api/autonudge/lp-1",
+        match={"loop_id": "lp-1"},
+        body={"message": "an edited goal", "idle_secs": 600},
+    )
+
+    response = await h.api_autonudge_update(request)
+
+    assert response.status == 409
+    assert _body(response)["code"] == "autonudge_stale_baseline"
+    update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_settings_only_patch_still_needs_no_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NEGATIVE CONTROL: the guard is scoped to a message write, not to every PATCH.
+
+    A non-UI caller changing only settings carries no stale-write hazard, so requiring a
+    baseline there would reject it for nothing.
+    """
+    _svc(monkeypatch, _FakeSvc([_loop("lp-1")]))
+    update = AsyncMock(return_value=(_loop("lp-1"), None, 200))
+    monkeypatch.setattr(h, "authorize_and_update_nudge", update)
+    request = _mk(
+        "PATCH",
+        "/api/autonudge/lp-1",
+        match={"loop_id": "lp-1"},
+        body={"idle_secs": 600},
+    )
+
+    response = await h.api_autonudge_update(request)
+
+    assert response.status == 200
+    update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_ui_shaped_patch_still_reaches_the_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shipped popover pairs message with a fingerprint, so that path must be intact."""
+    _svc(monkeypatch, _FakeSvc([_loop("lp-1")]))
+    update = AsyncMock(return_value=(_loop("lp-1"), None, 200))
+    monkeypatch.setattr(h, "authorize_and_update_nudge", update)
+    request = _mk(
+        "PATCH",
+        "/api/autonudge/lp-1",
+        match={"loop_id": "lp-1"},
+        body={"message": "an edited goal", "expect_fingerprint": "fp-armed-on"},
+    )
+
+    response = await h.api_autonudge_update(request)
+
+    assert response.status == 200
+    assert update.await_args.kwargs["expect_fingerprint"] == "fp-armed-on"
 
 
 # --- GET /api/autonudge ------------------------------------------------------
@@ -824,7 +898,12 @@ async def test_update_forwards_raw_fields_to_the_authorizer(
         "PATCH",
         "/api/autonudge/lp-1",
         match={"loop_id": "lp-1"},
-        body={"message": "new", "idle_secs": "900", "active": False},
+        body={
+            "message": "new",
+            "idle_secs": "900",
+            "active": False,
+            "expect_fingerprint": "fp-test",
+        },
     )
     payload = _body(await h.api_autonudge_update(request))
     assert payload == {"ok": True, "loop": h._serialize(_loop("lp-1"))}
@@ -845,10 +924,81 @@ async def test_update_surfaces_the_authorizer_refusal(monkeypatch: pytest.Monkey
     request = _mk("PATCH", "/api/autonudge/lp-x", match={"loop_id": "lp-x"}, body={"active": True})
     response = await h.api_autonudge_update(request)
     assert response.status == 404
-    assert _body(response) == {"error": "no such loop"}
+    assert _body(response) == {"error": "no such loop", "code": "autonudge_update_refused"}
+
+
+@pytest.mark.asyncio
+async def test_update_503_refusal_carries_a_retryable_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fail-closed policy refusal must be machine-distinguishable from a 400."""
+    _svc(monkeypatch, _FakeSvc())
+    monkeypatch.setattr(
+        h,
+        "authorize_and_update_nudge",
+        AsyncMock(return_value=(None, "Safety checks are temporarily unavailable", 503)),
+    )
+    request = _mk("PATCH", "/api/autonudge/lp-x", match={"loop_id": "lp-x"}, body={"active": True})
+    response = await h.api_autonudge_update(request)
+    assert response.status == 503
+    assert _body(response)["code"] == "autonudge_policy_unavailable"
 
 
 # --- DELETE /api/autonudge/{loop_id} -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_answers_503_when_the_store_refuses_rather_than_crashing(
+    monkeypatch: pytest.MonkeyPatch, sel_mock: MagicMock
+) -> None:
+    """GPT 5.6 (BLOCKING, fenced): an unvetted store crashed DELETE with an uncaught 500.
+
+    A sidecar malformed after startup makes the quarantine write refuse, and
+    ``AutoNudgeStoreUnvetted`` propagated out of ``svc.remove`` into aiohttp -- a 500 with
+    no audit trail, while the monitor stayed armed. The operator learns nothing about WHY,
+    and a 500 reads as a bug rather than as the retryable fail-closed refusal it is.
+    """
+    svc = _svc(monkeypatch, _FakeSvc([_loop("lp-1", "chat-5-555")]))
+    svc.remove = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AutoNudgeStoreUnvetted("quarantine sidecar unreadable")
+    )
+    request = _mk("DELETE", "/api/autonudge/lp-1", match={"loop_id": "lp-1"})
+
+    response = await h.api_autonudge_delete(request)
+
+    assert response.status == 503, (
+        "the store's fail-closed refusal escaped as an uncaught 500; a client cannot tell "
+        "it is retryable and the still-armed loop is never reported"
+    )
+    assert _body(response)["code"] == "autonudge_store_unvetted"
+    kwargs = sel_mock.log_tool_invocation.call_args.kwargs
+    assert kwargs["tool_name"] == "autonudge_delete"
+    assert kwargs["outcome"] == "denied"
+    assert kwargs["session_key"] == "chat-5-555"
+
+
+@pytest.mark.asyncio
+async def test_stopping_a_monitor_answers_503_when_the_store_refuses(
+    monkeypatch: pytest.MonkeyPatch, sel_mock: MagicMock
+) -> None:
+    """The STOP path shares the defect: it persists through the same refusing store.
+
+    Covered separately because a structured monitor leaves the handler at a different
+    return, so guarding only the plain-remove path would leave this arm crashing.
+    """
+    loop = _monitor_loop()
+    _svc(monkeypatch, _FakeSvc([loop]))
+    monkeypatch.setattr(
+        h,
+        "authorize_and_stop_monitor",
+        AsyncMock(side_effect=AutoNudgeStoreUnvetted("quarantine sidecar unreadable")),
+    )
+    monkeypatch.setattr(h, "_require_monitor_owner", AsyncMock(return_value=None))
+    request = _mk("DELETE", f"/api/autonudge/{loop.id}", match={"loop_id": loop.id})
+
+    response = await h.api_autonudge_delete(request)
+
+    assert response.status == 503, "the monitor stop path still crashes on a refusing store"
+    assert _body(response)["code"] == "autonudge_store_unvetted"
+    assert sel_mock.log_tool_invocation.call_args.kwargs["outcome"] == "denied"
 
 
 @pytest.mark.asyncio

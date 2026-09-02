@@ -18,6 +18,7 @@ grows into a subsystem should become a spec under
 | [profiling.md](profiling.md) | The debug-only stack sampler and desktop app metrics. |
 | [tool-stall-watchdog-placement.md](tool-stall-watchdog-placement.md) | Which stall checks belong in the ACP read loop and which must be judged out of band. |
 | [memory-benchmarks.md](memory-benchmarks.md) | Measuring the memory layer against LongMemEval and LoCoMo, and why the retrieval ruler is deterministic. |
+| [user-row-scrub-centralization.md](user-row-scrub-centralization.md) | Why the inbound user-row scrub sits at 13 call sites behind a ratchet test rather than inside `ConversationLog.append`, and what closing that costs. |
 
 Connections is a subsystem, not a narrow decision record, so its status
 vocabulary, mint contract, warm table, disconnect authorization and launch-gate
