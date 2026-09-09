@@ -6029,7 +6029,8 @@
       "try_again": "আবার চেষ্টা করুন"
     },
     "errorNotice": {
-      "dismiss": "খারিজ করুন"
+      "dismiss": "খারিজ করুন",
+      "show_full_message": "সম্পূর্ণ ত্রুটি বার্তা দেখান"
     },
     "excalidrawBlock": {
       "render_failed": "ডায়াগ্রাম রেন্ডার করা যায়নি — সোর্স দেখানো হচ্ছে"

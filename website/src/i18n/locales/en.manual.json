@@ -2698,7 +2698,8 @@
       "prompt_lead": "This error just came up in the {{productName}} dashboard. Diagnose the root cause and fix it."
     },
     "errorNotice": {
-      "dismiss": "Dismiss"
+      "dismiss": "Dismiss",
+      "show_full_message": "Show the full error message"
     },
     "reportProblemModal": {
       "report_a_problem": "Report a Problem",

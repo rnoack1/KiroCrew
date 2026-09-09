@@ -6221,7 +6221,8 @@
       "try_again": "Повторить"
     },
     "errorNotice": {
-      "dismiss": "Скрыть"
+      "dismiss": "Скрыть",
+      "show_full_message": "Показать полное сообщение об ошибке"
     },
     "excalidrawBlock": {
       "render_failed": "Не удалось отобразить диаграмму — показан исходный код"

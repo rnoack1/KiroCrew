@@ -6125,7 +6125,8 @@
       "try_again": "Riprova"
     },
     "errorNotice": {
-      "dismiss": "Ignora"
+      "dismiss": "Ignora",
+      "show_full_message": "Mostra il messaggio di errore completo"
     },
     "excalidrawBlock": {
       "render_failed": "Impossibile visualizzare il diagramma — sorgente mostrata"

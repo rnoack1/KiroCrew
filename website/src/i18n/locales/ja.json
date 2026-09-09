@@ -5933,7 +5933,8 @@
       "try_again": "もう一度試す"
     },
     "errorNotice": {
-      "dismiss": "閉じる"
+      "dismiss": "閉じる",
+      "show_full_message": "エラーメッセージ全体を表示"
     },
     "excalidrawBlock": {
       "render_failed": "図を描画できませんでした — ソースを表示しています"

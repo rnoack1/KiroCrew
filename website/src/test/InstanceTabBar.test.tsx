@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, within } from '@testing-library/react'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { restoreClipGeometry, stubMessageClipped } from './clipGeometry'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstanceTabBar, {
   setCrewPins,
@@ -55,6 +56,8 @@ beforeEach(() => {
   setStableOrder(false)
   vi.mocked(isEmbeddedPane).mockReturnValue(false)
 })
+
+afterEach(() => { restoreClipGeometry() })
 
 /** Open the crew dropdown and return the menu row for `name`. */
 async function openSwitcher(u: ReturnType<typeof userEvent.setup>, name: RegExp) {
@@ -459,6 +462,49 @@ describe('InstanceTabBar', () => {
     // second adjustment needs no reopen.
     await waitFor(() => expect(localStorage.getItem('mc-crew-switcher-stable-order')).toBe('1'))
     expect(await screen.findByTestId('crew-stable-order-toggle')).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('breaks and clamps an unbreakable list error so it cannot paint over the notice\'s own Ask-the-agent control', async () => {
+    const unbreakable = '<!DOCTYPE html><html><head><meta charset="utf-8">'
+    vi.mocked(api.listInstances).mockRejectedValue(new Error(unbreakable))
+    renderWithProviders(<InstanceTabBar />)
+
+    const notice = await screen.findByTestId('instance-tab-bar-list-error')
+    expect(within(notice).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
+    // `truncate` on the flex root cannot ellipsise, and its nowrap inherits down
+    // and removes the message's last break opportunity.
+    expect(notice.className).not.toMatch(/truncate|whitespace-nowrap/)
+    const msg = within(notice).getByText(unbreakable)
+    expect(msg.className).toMatch(/break-all/)
+    expect(msg.className).toMatch(/line-clamp-1/)
+  })
+
+  it('keeps the clamped tail of a long list error reachable as a hover tooltip', async () => {
+    const unbreakable = '<!DOCTYPE html><html><head><meta charset="utf-8">'
+    stubMessageClipped()
+    vi.mocked(api.listInstances).mockRejectedValue(new Error(unbreakable))
+    renderWithProviders(<InstanceTabBar />)
+
+    const notice = await screen.findByTestId('instance-tab-bar-list-error')
+    expect(within(notice).getByText(unbreakable)).toHaveAttribute('title', unbreakable)
+  })
+
+  it('reveals a long list error\'s tail in a popover on focus, so the fixed-height bar never grows', async () => {
+    const unbreakable = '<!DOCTYPE html><html><head><meta charset="utf-8">'
+    stubMessageClipped()
+    vi.mocked(api.listInstances).mockRejectedValue(new Error(unbreakable))
+    renderWithProviders(<InstanceTabBar />)
+
+    const msg = within(await screen.findByTestId('instance-tab-bar-list-error')).getByText(unbreakable)
+    // Focusable because it IS a button, not because a tab stop was added to a span.
+    expect(msg.tagName).toBe('BUTTON')
+    expect(msg).not.toHaveAttribute('tabindex')
+    // No in-row reveal: this bar is a fixed `h-8`, so the tail has to arrive in a
+    // portaled layer rather than by expanding the row.
+    expect(msg.className).not.toMatch(/focus:/)
+
+    fireEvent.focus(msg)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('DOCTYPE html')
   })
 
 })

@@ -5933,7 +5933,8 @@
       "try_again": "다시 시도"
     },
     "errorNotice": {
-      "dismiss": "닫기"
+      "dismiss": "닫기",
+      "show_full_message": "전체 오류 메시지 표시"
     },
     "excalidrawBlock": {
       "render_failed": "다이어그램을 렌더링할 수 없습니다 — 소스를 표시합니다"

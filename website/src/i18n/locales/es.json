@@ -6125,7 +6125,8 @@
       "try_again": "Reintentar"
     },
     "errorNotice": {
-      "dismiss": "Descartar"
+      "dismiss": "Descartar",
+      "show_full_message": "Mostrar el mensaje de error completo"
     },
     "excalidrawBlock": {
       "render_failed": "No se pudo representar el diagrama: se muestra el código fuente"

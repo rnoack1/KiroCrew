@@ -6125,7 +6125,8 @@
       "try_again": "Tentar novamente"
     },
     "errorNotice": {
-      "dismiss": "Dispensar"
+      "dismiss": "Dispensar",
+      "show_full_message": "Mostrar a mensagem de erro completa"
     },
     "excalidrawBlock": {
       "render_failed": "Não foi possível renderizar o diagrama — exibindo a origem"

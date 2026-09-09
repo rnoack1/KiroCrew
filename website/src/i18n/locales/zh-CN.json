@@ -5933,7 +5933,8 @@
       "try_again": "重试"
     },
     "errorNotice": {
-      "dismiss": "忽略"
+      "dismiss": "忽略",
+      "show_full_message": "显示完整错误消息"
     },
     "excalidrawBlock": {
       "render_failed": "无法渲染此图 — 显示源码"

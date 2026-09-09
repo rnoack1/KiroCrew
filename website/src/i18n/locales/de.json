@@ -6029,7 +6029,8 @@
       "try_again": "Erneut versuchen"
     },
     "errorNotice": {
-      "dismiss": "Schließen"
+      "dismiss": "Schließen",
+      "show_full_message": "Vollständige Fehlermeldung anzeigen"
     },
     "excalidrawBlock": {
       "render_failed": "Diagramm konnte nicht gerendert werden – Quelltext wird angezeigt"

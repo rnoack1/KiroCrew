@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { restoreClipGeometry, stubMessageClipped } from './clipGeometry'
 import type { IssueSource } from '../types'
 import type { PullRequestLink } from '../utils/pullRequestLinks'
 
@@ -91,6 +92,8 @@ describe('IssuePanel', () => {
     mockApi.fetchIssueSource.mockImplementation((url: string) =>
       Promise.resolve(url === closedIssue.url ? closedIssue : openIssue))
   })
+
+  afterEach(() => { restoreClipGeometry() })
 
   it('renders the header facts from the contract payload', async () => {
     renderPanel()
@@ -218,5 +221,110 @@ describe('IssuePanel', () => {
     expect(text).toContain('- Labels: bug, good first issue')
     expect(text).toContain('- Reported by: octocat')
     expect(text).toContain(`- Issue: ${openIssue.url}`)
+  })
+
+  it('clamps the cached-refresh notice to one line so it cannot push Retry out of the compact row', async () => {
+    renderPanel({ issues: [links[0]] })
+    await screen.findByText('Crash on empty label list')
+
+    mockApi.fetchIssueSource.mockRejectedValue(new Error('gh: 503 upstream unavailable'))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh issue' }))
+
+    const notice = await screen.findByTestId('issue-panel-refresh-error')
+    expect(within(notice).getByText(/showing the last loaded version/)).toHaveClass('line-clamp-1')
+    // `truncate` would be inert on the inline-flex root, and its nowrap inherits
+    // down and cancels the wrap the message declares for itself.
+    expect(notice.className).not.toMatch(/truncate|whitespace-nowrap/)
+    // Localised: the longest catalogs wrap this label onto a second line.
+    const retry = screen.getByRole('button', { name: 'Retry' })
+    expect(retry).toHaveClass('shrink-0', 'whitespace-nowrap')
+  })
+
+  it('keeps the clamped tail of the cached-refresh notice reachable by pointer, keyboard and touch', async () => {
+    stubMessageClipped()
+    renderPanel({ issues: [links[0]] })
+    await screen.findByText('Crash on empty label list')
+
+    mockApi.fetchIssueSource.mockRejectedValue(new Error('gh: 503 upstream unavailable'))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh issue' }))
+
+    const notice = await screen.findByTestId('issue-panel-refresh-error')
+    const msg = within(notice).getByText(/showing the last loaded version/)
+    expect(msg.tagName).toBe('BUTTON')
+    expect(msg).toHaveAttribute('title', msg.textContent)
+    expect(msg).toHaveAttribute('aria-expanded', 'false')
+    // Names the action, not the error text, or AT announces an unlabelled button.
+    expect(msg).toHaveAccessibleName('Show the full error message')
+    // Marked as holding more, or nobody discovers the reveal.
+    expect(msg).toHaveClass('cursor-help', 'underline', 'decoration-dotted')
+    // Belongs to the message, not the row's action group, which already holds
+    // Ask-the-agent and Retry — a third would breach max-two-buttons-per-row.
+    const messageRegion = msg.closest('span') as HTMLElement
+    const row = notice.parentElement as HTMLElement
+    const peerActions = [...row.querySelectorAll('button')].filter(b => !messageRegion.contains(b))
+    expect(peerActions).toHaveLength(2)
+    expect(peerActions).not.toContain(msg)
+
+    fireEvent.focus(msg)
+    const tip = await screen.findByRole('tooltip')
+    expect(tip).toHaveTextContent('showing the last loaded version')
+    expect(msg).toHaveAttribute('aria-expanded', 'true')
+    // AT reaches the full text through the popover, not through a pointer-only title.
+    expect(msg).toHaveAttribute('aria-describedby', tip.id)
+  })
+
+  it('offers no disclosure at all when the message already fits, so nothing promises hidden text', async () => {
+    // No geometry stub: jsdom reports no overflow, which is the fits-on-one-line
+    // case. The clamp class alone must not conjure an affordance.
+    renderPanel({ issues: [links[0]] })
+    await screen.findByText('Crash on empty label list')
+
+    mockApi.fetchIssueSource.mockRejectedValue(new Error('gh: 503 upstream unavailable'))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh issue' }))
+
+    const msg = within(await screen.findByTestId('issue-panel-refresh-error'))
+      .getByText(/showing the last loaded version/)
+    expect(msg).not.toHaveAttribute('tabindex')
+    expect(msg).not.toHaveAttribute('title')
+    expect(msg).not.toHaveAttribute('role')
+    expect(msg.className).not.toMatch(/cursor-help|decoration-dotted/)
+    fireEvent.focus(msg)
+    fireEvent.click(msg)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('keeps the reveal open while the pointer moves into it, so the error text can be selected', async () => {
+    stubMessageClipped()
+    renderPanel({ issues: [links[0]] })
+    await screen.findByText('Crash on empty label list')
+
+    mockApi.fetchIssueSource.mockRejectedValue(new Error('gh: 503 upstream unavailable'))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh issue' }))
+
+    const msg = within(await screen.findByTestId('issue-panel-refresh-error'))
+      .getByText(/showing the last loaded version/)
+    fireEvent.focus(msg)
+    const tip = await screen.findByRole('tooltip')
+    // A drag to select moves focus off the span and INTO the popover; closing on
+    // that blur is what made the text uncopyable mid-drag.
+    fireEvent.blur(msg, { relatedTarget: tip })
+    expect(screen.queryByRole('tooltip')).not.toBeNull()
+  })
+
+  it('opens the clamped message on a bare tap, without relying on a browser focusing the span', async () => {
+    stubMessageClipped()
+    renderPanel({ issues: [links[0]] })
+    await screen.findByText('Crash on empty label list')
+
+    mockApi.fetchIssueSource.mockRejectedValue(new Error('gh: 503 upstream unavailable'))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh issue' }))
+
+    const msg = within(await screen.findByTestId('issue-panel-refresh-error'))
+      .getByText(/showing the last loaded version/)
+    // `fireEvent.click` does NOT focus, which is exactly the Safari-style case:
+    // a tap that never lands focus must still reveal the tail.
+    expect(document.activeElement).not.toBe(msg)
+    fireEvent.click(msg)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('showing the last loaded version')
   })
 })
