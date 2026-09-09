@@ -7215,6 +7215,7 @@
       "failed": "失敗",
       "not_connected": "未接続",
       "send_a_copy_to": "コピーを送信",
+      "send_failed": "そのインスタンスにコピーを送信できませんでした。",
       "sent": "送信しました",
       "sent_transcript_only": "送信しました（記録のみ）",
       "transcript_only_hint": "そのインスタンスが会話コンテキスト全体を復元できなかったため、このコピーは記録のみから再開します。",
@@ -7228,6 +7229,7 @@
       "mark_as_read": "読了にマーク",
       "mark_as_unread": "未読にマーク",
       "move_to_folder": "フォルダーに移動…",
+      "offline_reason": "ゲートウェイがオフラインです — グレー表示の操作には接続が必要です",
       "open_in_new_tab": "セッションタブで開く",
       "pin": "ピン留め",
       "pop_out_to_window": "ウィンドウにポップアウト",
@@ -7243,7 +7245,9 @@
       "unpin": "ピン留め解除"
     },
     "sessionColorSwatches": {
+      "color_change_failed": "セッションの色を変更できませんでした。変更は元に戻されました。",
       "custom_color": "カスタムカラー",
+      "custom_color_picker": "カスタムカラーピッカー",
       "hex_color_code": "16進カラーコード",
       "no_color": "色なし"
     },
@@ -7462,6 +7466,7 @@
       "close_tag_picker": "タグピッカーを閉じる",
       "new_tag": "新しいタグ…",
       "no_tags_yet_create_one_below": "まだタグがありません。下記で作成してください。",
+      "tag_create_failed": "タグを作成できませんでした。入力した名前は入力欄に残っています。",
       "tags": "タグ"
     },
     "snipOverlay": {
@@ -8352,6 +8357,9 @@
     },
     "useSessionActions": {
       "close_this_session": "このセッションを閉じますか？",
+      "fork_failed": "セッションを複製できませんでした。何も作成されていません。",
+      "mode_change_failed": "セッションのモードを切り替えられませんでした。変更は元に戻されました。",
+      "pin_change_failed": "セッションのピン留めを変更できませんでした。変更は元に戻されました。",
       "reload_failed": "セッションの再読み込みに失敗しました。エージェントが応答中かゲートウェイに接続できない可能性があります。セッションがアイドルのときに再試行してください。",
       "reload_failed_subagents": "このセッションのサブエージェントがまだ動作中です。完了してから再試行してください。",
       "switch_to_autopilot_mode_future_messages_will_us": "オートパイロットモードに切り替えますか？今後のメッセージはオートパイロット動作（プラン→承認→実行）を使用します。",
@@ -8373,6 +8381,9 @@
       "approval_required": "承認が必要です",
       "tool_approval": "ツールの承認：{{name}}",
       "unknown": "不明"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "セッションをそのフォルダーに移動できませんでした。移動は元に戻されました。"
     }
   },
   "lib": {
@@ -9858,10 +9869,13 @@
       "screenshot_failed_reason": "スクリーンショットに失敗しました：{{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "セッション名を変更できませんでした",
+      "could_not_rename_to": "「{{name}}」への名前の変更に失敗しました",
+      "rename_already_saving": "このセッションの名前変更は既に保存中です — 入力内容は保持されます。少し待ってからもう一度お試しください",
       "could_not_generate_title": "タイトルを生成できませんでした",
       "could_not_open_side_chat": "サイドチャットを開けませんでした",
       "side_command_not_run": "/side コマンドは実行されませんでした。メッセージは入力欄に残っています。",
-      "could_not_send_to_side_chat": "サイドチャットに送信できませんでした"
+      "could_not_send_to_side_chat": "サイドチャットに送信できませんでした",
+      "rename_reverted_try_again": "以前のタイトルに戻しました。もう一度お試しください。"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",
@@ -9981,6 +9995,7 @@
       "new_chat_in_folder": "フォルダー内に新しいチャット",
       "new_chat_on_crew": "Crew で新しいチャット",
       "pending_your_response": "あなたの回答待ち",
+      "rename_saving": "新しい名前を保存しています…",
       "runs_on_crew": "{{name}} 上で実行 — 接続済みの Crew であり、このマシンではありません",
       "new_chat_in_name": "「{{name}}」で新しいチャットを開始",
       "new_chat_session": "新しいチャットセッション",
@@ -14671,9 +14686,31 @@
       "saving": "保存中…"
     },
     "offline": {
+      "change_folder_settings": "フォルダー設定を変更",
+      "change_tags": "タグを変更",
+      "close_sessions": "セッションを終了",
+      "create_folders": "フォルダーを作成",
+      "create_sessions": "セッションを作成",
+      "delete_folders": "フォルダーを削除",
       "disabled_gateway_offline": "{{label}} は無効です — ゲートウェイがオフラインです",
+      "export_sessions": "セッションをエクスポート",
       "gateway_offline_reconnect": "ゲートウェイがオフラインです — {{action}}するには再接続してください",
-      "submit_comments": "コメントを送信"
+      "hide_folders": "フォルダーを非表示に",
+      "move_folders": "フォルダーを移動",
+      "move_sessions": "セッションを移動",
+      "optimize": "プロンプトを最適化",
+      "pin_sessions": "セッションをピン留め",
+      "recolor_sessions": "セッションの色を変更",
+      "regenerate_titles": "タイトルを再生成",
+      "reload_sessions": "セッションを再読み込み",
+      "rename_folders": "フォルダー名を変更",
+      "rename_sessions": "セッション名を変更",
+      "resume_sessions": "セッションを再開",
+      "send": "送信",
+      "send_to_instances": "インスタンスに送信",
+      "submit_comments": "コメントを送信",
+      "switch_session_modes": "セッションモードを変更",
+      "switch_sessions": "セッションを変更"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "ブラウザーがポップアップウィンドウをブロックしました。このサイトのポップアップを許可して、もう一度お試しください。"

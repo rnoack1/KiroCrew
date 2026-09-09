@@ -7435,6 +7435,7 @@
       "failed": "Falló",
       "not_connected": "no conectado",
       "send_a_copy_to": "Enviar una copia a",
+      "send_failed": "No se pudo enviar una copia a esa instancia.",
       "sent": "Enviado",
       "sent_transcript_only": "Enviado (solo transcripción)",
       "transcript_only_hint": "Esa instancia no pudo restaurar el contexto completo de la conversación, así que esta copia se reanuda solo desde la transcripción.",
@@ -7448,6 +7449,7 @@
       "mark_as_read": "Marcar como leída",
       "mark_as_unread": "Marcar como no leída",
       "move_to_folder": "Mover a la carpeta…",
+      "offline_reason": "Gateway sin conexión — las acciones atenuadas necesitan conexión",
       "open_in_new_tab": "Abrir en una pestaña de sesión",
       "pin": "Fijar",
       "pop_out_to_window": "Abrir en una ventana aparte",
@@ -7463,7 +7465,9 @@
       "unpin": "Dejar de fijar"
     },
     "sessionColorSwatches": {
+      "color_change_failed": "No se pudo cambiar el color de esta sesión: el cambio se deshizo.",
       "custom_color": "Color personalizado",
+      "custom_color_picker": "Selector de color personalizado",
       "hex_color_code": "Código de color hexadecimal",
       "no_color": "Sin color"
     },
@@ -7684,6 +7688,7 @@
       "close_tag_picker": "Cerrar el selector de etiquetas",
       "new_tag": "Nueva etiqueta…",
       "no_tags_yet_create_one_below": "Aún no hay etiquetas. Crea una abajo.",
+      "tag_create_failed": "No se pudo crear la etiqueta. El nombre que escribiste sigue en el campo.",
       "tags": "Etiquetas"
     },
     "snipOverlay": {
@@ -8582,6 +8587,9 @@
     },
     "useSessionActions": {
       "close_this_session": "¿Cerrar esta sesión?",
+      "fork_failed": "No se pudo duplicar esta sesión: no se creó nada.",
+      "mode_change_failed": "No se pudo cambiar el modo de esta sesión: el cambio se deshizo.",
+      "pin_change_failed": "No se pudo cambiar el anclaje de esta sesión: el cambio se deshizo.",
       "reload_failed": "No se pudo recargar la sesión. Puede que el agente esté respondiendo o que el gateway no esté accesible; inténtalo de nuevo cuando la sesión esté inactiva.",
       "reload_failed_subagents": "Los subagentes siguen trabajando en esta sesión. Inténtalo de nuevo cuando terminen.",
       "switch_to_autopilot_mode_future_messages_will_us": "¿Cambiar al modo piloto automático? Los mensajes siguientes usarán el comportamiento de piloto automático (planificar → aprobar → ejecutar).",
@@ -8603,6 +8611,9 @@
       "approval_required": "Se requiere aprobación",
       "tool_approval": "Aprobación de herramienta: {{name}}",
       "unknown": "Desconocido"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "No se pudo mover esta sesión a esa carpeta: el movimiento se deshizo."
     }
   },
   "lib": {
@@ -10144,10 +10155,13 @@
       "screenshot_failed_reason": "Error en la captura de pantalla: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "No se pudo renombrar la sesión",
+      "could_not_rename_to": "No se pudo cambiar el nombre a «{{name}}»",
+      "rename_already_saving": "Ya se está guardando un cambio de nombre para esta sesión: se conserva tu borrador; inténtalo de nuevo en un momento",
       "could_not_generate_title": "No se pudo generar un título",
       "could_not_open_side_chat": "No se pudo abrir el chat lateral",
       "side_command_not_run": "El comando /side no se ejecutó. Tu mensaje sigue en el editor.",
-      "could_not_send_to_side_chat": "No se pudo enviar al chat lateral"
+      "could_not_send_to_side_chat": "No se pudo enviar al chat lateral",
+      "rename_reverted_try_again": "Se restauró el título anterior: inténtalo de nuevo."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 omitida — seleccionada actualmente)",
@@ -10275,6 +10289,7 @@
       "new_chat_in_folder": "Nuevo chat en la carpeta",
       "new_chat_on_crew": "Nuevo chat en un Crew",
       "pending_your_response": "Pendiente de tu respuesta",
+      "rename_saving": "Guardando el nombre nuevo…",
       "runs_on_crew": "Se ejecuta en {{name}} — un Crew conectado, no en esta máquina",
       "new_chat_in_name": "Nuevo chat en {{name}}",
       "new_chat_session": "Nueva sesión de chat",
@@ -15054,9 +15069,31 @@
       "saving": "Guardando…"
     },
     "offline": {
+      "change_folder_settings": "cambiar los ajustes de carpeta",
+      "change_tags": "cambiar las etiquetas",
+      "close_sessions": "cerrar sesiones",
+      "create_folders": "crear carpetas",
+      "create_sessions": "crear sesiones",
+      "delete_folders": "eliminar carpetas",
       "disabled_gateway_offline": "{{label}} desactivado — gateway sin conexión",
+      "export_sessions": "exportar sesiones",
       "gateway_offline_reconnect": "Gateway sin conexión — reconéctate para {{action}}",
-      "submit_comments": "enviar comentarios"
+      "hide_folders": "ocultar carpetas",
+      "move_folders": "mover carpetas",
+      "move_sessions": "mover sesiones",
+      "optimize": "optimizar prompts",
+      "pin_sessions": "fijar sesiones",
+      "recolor_sessions": "recolorear sesiones",
+      "regenerate_titles": "regenerar títulos",
+      "reload_sessions": "recargar sesiones",
+      "rename_folders": "cambiar el nombre de las carpetas",
+      "rename_sessions": "cambiar el nombre de las sesiones",
+      "resume_sessions": "reanudar sesiones",
+      "send": "enviar",
+      "send_to_instances": "enviar a instancias",
+      "submit_comments": "enviar comentarios",
+      "switch_session_modes": "cambiar los modos de sesión",
+      "switch_sessions": "cambiar de sesión"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Tu navegador bloqueó la ventana desacoplada. Permite las ventanas emergentes para este sitio e inténtalo de nuevo."
