@@ -4,6 +4,7 @@ import AskAgentButton, { handoffErrorToAgent } from './AskAgentButton'
 import type { ErrorReport } from '../utils/errorReport'
 
 import { i18nT } from '../i18n/t'
+import { withOriginLink } from './withOriginLink'
 
 export type ErrorNoticeMenuItemComponent = ComponentType<{
   title?: string
@@ -149,7 +150,7 @@ export default function ErrorNotice({
       >
         <AlertTriangle size={14} className="shrink-0" aria-hidden="true" />
         {title && <strong className="font-semibold">{title}</strong>}
-        <span className={`min-w-0 ${messageClassName}`} style={{ overflowWrap: 'anywhere' }}>{message}</span>
+        <span className={`min-w-0 ${messageClassName}`} style={{ overflowWrap: 'anywhere' }}>{withOriginLink(message)}</span>
         {askAgent && (
           <AskAgentButton
             report={report}
@@ -183,7 +184,9 @@ export default function ErrorNotice({
         {title && <strong className="font-semibold">{title} </strong>}
         {/* Wrapped only when asked: the bare text node is the shape every
             existing consumer's tests read. */}
-        {messageClassName ? <span className={messageClassName}>{message}</span> : message}
+        {messageClassName
+          ? <span className={messageClassName}>{withOriginLink(message)}</span>
+          : withOriginLink(message)}
       </div>
       {askAgent && (
         <AskAgentButton
