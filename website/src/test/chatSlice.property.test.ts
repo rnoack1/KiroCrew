@@ -36,6 +36,12 @@ const isDroppedPlaceholder = (s: string) =>
 const chunkContentArb = fc.string({ minLength: 1, maxLength: 50 })
   .filter(s => s.length > 0 && !s.includes('\n[⚠') && !isDroppedPlaceholder(s))
 
+// The reducer judges the ACCUMULATED text, so chunks that each clear `chunkContentArb`
+// can still concatenate into a placeholder it drops: `" "` + `"-"` is `" -"`.
+const chunkSeqArb = (maxLength: number) =>
+  fc.array(chunkContentArb, { minLength: 1, maxLength })
+    .filter(chunks => !isDroppedPlaceholder(chunks.join('')))
+
 
 // Feature: inline-tool-cards, Property 3: Streaming-to-assistant conversion on finalization
 // **Validates: Requirements 2.1, 4.1, 5.2**
@@ -44,7 +50,7 @@ describe('Property 3: Streaming-to-assistant conversion on finalization', () => 
     fc.assert(
       fc.property(
         // Generate 1–5 chunk contents and a finalizer type
-        fc.array(chunkContentArb, { minLength: 1, maxLength: 5 }),
+        chunkSeqArb(5),
         fc.constantFrom('_segment', '_done'),
         (chunks, finalizer) => {
           // Build up a streaming message from chunks
@@ -205,7 +211,7 @@ describe('Property 11: Single assistant message for tool-free streams', () => {
   it('chunk-only sequences followed by _done produce exactly one assistant message', () => {
     fc.assert(
       fc.property(
-        fc.array(chunkContentArb, { minLength: 1, maxLength: 10 }),
+        chunkSeqArb(10),
         (chunks) => {
           let state = { ...withSlot }
           let accumulated = ''
