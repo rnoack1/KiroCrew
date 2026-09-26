@@ -150,6 +150,7 @@ from kiro_crew.dashboard.chat_utils import (
     is_harness_slash_command,
     is_system_injection_item,
     mirror_is_paused,
+    open_construct_at_end,
     owned_stage_delivery_entry,
     parse_workflow_command,
     remember_slack_options,
@@ -12603,7 +12604,14 @@ async def _run_chat(
                 # message so post-tool text starts a fresh message.
                 if in_tool_group:
                     _flush_text_stream()
-                    if assistant_text:
+                    _open_construct = open_construct_at_end(assistant_text)
+                    if assistant_text and _open_construct:
+                        logger.debug(
+                            "segment cut deferred on %s — %s still open",
+                            slot.key,
+                            _open_construct,
+                        )
+                    elif assistant_text:
                         _flush_segment(state, slot, assistant_text)
                         assistant_text = ""
                         _turn_flushed_visible_text = True
@@ -12782,9 +12790,17 @@ async def _run_chat(
                 # but keep the streaming message in place for correct tool ordering.
                 _flush_text_stream()
                 if not in_tool_group and assistant_text:
-                    _flush_segment(state, slot, assistant_text, broadcast=False)
-                    assistant_text = ""
-                    _turn_flushed_visible_text = True
+                    _open_construct = open_construct_at_end(assistant_text)
+                    if _open_construct:
+                        logger.debug(
+                            "segment cut deferred on %s — %s still open",
+                            slot.key,
+                            _open_construct,
+                        )
+                    else:
+                        _flush_segment(state, slot, assistant_text, broadcast=False)
+                        assistant_text = ""
+                        _turn_flushed_visible_text = True
                 # AFTER the flush, because seq is the order a reader folds on and
                 # the model narrating before it calls a tool is the common case:
                 # `_flush_segment` is what appends this turn's `message/sent`, so
