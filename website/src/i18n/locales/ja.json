@@ -11699,6 +11699,8 @@
         "cancel_esc": "キャンセル (Esc)",
         "copy": "コピー",
         "copy_link_to_message": "メッセージへのリンクをコピー",
+        "row_redacted": "認証情報を非表示 · 元のテキストは保存されません",
+        "row_withheld": "メッセージは保存されません: 認証情報フィルターを利用できません",
         "edit_message": "メッセージを編集",
         "edit_resend": "編集して再送信",
         "send": "送信",

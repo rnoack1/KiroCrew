@@ -42,7 +42,8 @@ logger = logging.getLogger("kiro_crew.dashboard.chat_persistence")
 #: build. ``test_slot_save_newer_row_fields`` pins that the builder writes nothing
 #: outside it.
 _KNOWN_ROW_KEYS = frozenset(
-    {"role", "content", "ts", "cls", "meta", "variants", "variant_idx", "tools", *PROVENANCE_FIELDS}
+    {"role", "content", "ts", "cls", "meta", "variants", "variant_idx", "tools", "redacted"}
+    | set(PROVENANCE_FIELDS)
 )
 
 #: The most one restored row keeps of the fields a newer build wrote on it, measured

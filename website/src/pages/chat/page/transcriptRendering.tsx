@@ -247,6 +247,7 @@ export function useTranscriptRendering({
             <UserMessage
               content={m.content}
               meta={m.meta}
+              redacted={m.redacted === true}
               timestamp={chatConfig.showTimestamps ? msgTime : undefined}
               timestampTitle={msgTimeFull}
               renderContent={renderUserContentCb}

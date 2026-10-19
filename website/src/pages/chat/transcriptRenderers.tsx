@@ -726,6 +726,7 @@ export function createTranscriptRenderers(
               <UserMessage
                 content={m.content}
                 meta={m.meta}
+                redacted={m.redacted === true}
                 timestamp={formatTs(m.ts)}
                 timestampTitle={fmtMessageTimeFull(m.ts)}
                 // The session triple mirrors the crewmate bubble above, so a

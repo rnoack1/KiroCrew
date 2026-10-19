@@ -239,12 +239,16 @@ PROVENANCE_FIELDS = ("source_thread", "source_user")
 
 
 def carry_provenance(dest: dict, src: dict) -> None:
-    """Copy *src*'s recorded provenance onto *dest*, leaving absent fields out.
+    """Copy *src*'s recorded provenance and rewrite mark onto *dest*.
 
     A message's origin is a property of the message, not of the file it happens
     to be stored in, so any path that copies or re-serializes a persisted line
     must carry these fields across or the copy claims a different origin than
     the original.
+
+    ``redacted`` rides along for the same reason, which is why it is carried here
+    rather than at each caller: a copy that drops it claims the row is the author's
+    own words when a scrub rewrote them, and no reader can tell afterwards.
 
     Absent stays absent, and an empty or non-string value is treated as absent:
     :meth:`ConversationLog.append` writes each field only when it is truthy and
@@ -255,6 +259,8 @@ def carry_provenance(dest: dict, src: dict) -> None:
         value = src.get(field)
         if isinstance(value, str) and value:
             dest[field] = value
+    if src.get("redacted"):
+        dest["redacted"] = True
 
 
 #: ``meta`` key marking a row a PERSON authored, set by the send paths a human

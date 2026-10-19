@@ -458,6 +458,17 @@ export default [
               // Translating it would turn a retained credential into a new value.
               String.raw`^\[REDACTED\]$`,
 
+              // Exact backend sentinel: the body a transcript row carries when the host's
+              // credential policy would not compose, so the whole message was dropped
+              // rather than one span masked. It must byte-match LOG_WITHHELD_PLACEHOLDER
+              // in platform/context.py, because the row cue keys on it to tell a dropped
+              // message from a masked one -- a locale that translated it would stop
+              // matching and the row would be cued as a masked span instead. Not copy in
+              // either direction: the cue rendered BESIDE it is the copy, and that one IS
+              // translated (`row_withheld`). Anchored to the one exact string rather than
+              // widened to a `^<[a-z: ]+>$` shape, which would admit real bracketed prose.
+              String.raw`^<withheld: redaction unavailable>$`,
+
               // The same sentinel standing in for a URL QUERY, e.g. `?token=<redacted>`
               // and `?<query>` — the two values `safePaneUrl` substitutes for a query it
               // will not journal. Deliberately a separate entry from the bare sentinel

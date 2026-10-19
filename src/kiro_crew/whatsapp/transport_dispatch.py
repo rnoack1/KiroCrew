@@ -46,6 +46,7 @@ from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.session_lifecycle import (
     STOP_DECLINED_COMPACTING_TEXT,
     compaction_in_flight,
@@ -721,6 +722,7 @@ class WhatsAppDispatcher:
         """Record the turn to conversation_log (dashboard visibility + restart)."""
         if self.conv_log is None:
             return
+        user_text = redact_log_via_context(user_text)
         self.conv_log.append(session_key, "user", user_text, mid=mint_row_mid())
         if reply_text:
             self.conv_log.append(session_key, "assistant", reply_text, mid=mint_row_mid())

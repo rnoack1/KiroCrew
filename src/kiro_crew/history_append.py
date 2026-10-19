@@ -22,7 +22,7 @@ from kiro_crew.atomic_write import append_line
 from kiro_crew.chat_attachments import persist_inline_images, same_text_modulo_images
 from kiro_crew.history_schema import metadata_now_iso, monotonic_transcript_ts
 from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.platform.context import carries_redaction_marker, redact_log_via_context
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
@@ -35,17 +35,22 @@ def _redact_at_write_boundary(role: str, content: str) -> str:
     channel thread persist to the same file through different code paths, so the
     rule has to live where the bytes are written rather than in either caller.
 
-    The gate is ``role != "user"``, matching the dashboard's own write-back
-    boundary: text the user typed is stored verbatim, and everything the model or
-    the system produced is scrubbed of credentials and exfiltration URLs.
+    The gate is ``role != "user"``: everything the model or the system produced is
+    scrubbed of credentials and exfiltration URLs here.
+
+    A user row is NOT stored verbatim in general, and this function is not what
+    changed that. The channel persisters and the shared ``save_conversation_turn``
+    scrub their user text BEFORE calling in, so for a user row the rule lives in
+    those callers; ``TestEveryUserRowPersisterScrubs`` enumerates them, so a new
+    inbound persister fails that suite instead of leaking silently. The
+    dashboard's own write-back is the surface still relying on the exemption.
+
     Idempotent, so a caller that already redacted loses nothing by passing
     through here.
     """
     if role == "user":
         return content
-    content, _ = redact_exfiltration_urls(content)
-    content, _ = redact_credentials(content)
-    return content
+    return redact_log_via_context(content)
 
 
 def _persist_inline_attachments(self: ConversationLog, key: str, role: str, content: str) -> str:
@@ -152,9 +157,13 @@ def append(
             with open(path, "w", encoding="utf-8", opener=owner_only_opener) as f:
                 f.write(json.dumps(meta) + "\n")
 
+        scrubbed = _redact_at_write_boundary(role, content)
+        # Derived from text HERE only; see the helper for why nowhere else.
+        mark = carries_redaction_marker(scrubbed)
         msg: dict = {
             "role": role,
-            "content": _redact_at_write_boundary(role, content),
+            "content": scrubbed,
+            **({"redacted": True} if mark else {}),
             **({"cls": cls} if cls else {}),
             # Strictly after the row already on disk, so the pair written by
             # one turn stays ordered on a host whose clock cannot separate

@@ -1200,6 +1200,84 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "shared code: a channel cannot forget what it does not call.",
     ),
     (
+        "Webex persisted transcript rows",
+        "webex/transport_dispatch.py",
+        "The turn this channel writes to the conversation log, served back to dashboard "
+        "readers. Its user side can carry store-sourced text no ingress scan ever saw -- an "
+        "auto-nudge goal arriving as a synthetic inbound whose single `text` field is both "
+        "prompt and row. Redacted AT THE SINK inside `_persist_turn`, after the turn: the "
+        "prompt is already consumed, so the instruction survives verbatim while the stored "
+        "copy is scrubbed. `discord/transport_dispatch_ledger.py` can receive that synthetic "
+        "inbound too; `telegram/dispatch/turn_engine.py` cannot.",
+    ),
+    (
+        "Feishu persisted transcript rows",
+        "feishu/transport_dispatch.py",
+        "Same persisted-row egress as the Discord/Telegram/Webex persisters. No nudge "
+        "synthetic inbound reaches it -- `binding_key_for` honours only "
+        "`slack:`/`discord:`/`webex:` -- so the scrub covers ordinary inbound user text.",
+    ),
+    (
+        "Teams persisted transcript rows",
+        "teams/transport_dispatch.py",
+        "Same persisted-row egress as the siblings; no nudge here, so ordinary inbound text.",
+    ),
+    (
+        "WeCom persisted transcript rows",
+        "wecom/transport_dispatch.py",
+        "Same persisted-row egress as the siblings; no nudge here, so ordinary inbound text.",
+    ),
+    (
+        "Weixin persisted transcript rows",
+        "weixin/transport_dispatch.py",
+        "Same persisted-row egress as the siblings; no nudge here, so ordinary inbound text.",
+    ),
+    (
+        "WhatsApp persisted transcript rows",
+        "whatsapp/transport_dispatch.py",
+        "Same persisted-row egress as the siblings; no nudge here, so ordinary inbound text.",
+    ),
+    (
+        "iMessage persisted transcript rows",
+        "imessage/transport_dispatch.py",
+        "Same persisted-row egress as the siblings. This module also calls `redact_handle` "
+        "for gate-side log hygiene, which is why its siblings `imessage/client.py` and "
+        "`imessage/transport.py` are non-egress; the transcript scrub made THIS one a "
+        "content sink, so it is registered rather than allowlisted.",
+    ),
+    (
+        "Slack persisted transcript rows",
+        "slack/transport_dispatch.py",
+        "The inbound user row this channel writes to the conversation log, served back to "
+        "dashboard readers. Scrubbed for the PERSISTED copy only: the same `text` still "
+        "reaches `build_message`, so the model prompt stays verbatim. This module's OTHER "
+        "user rows do not call a redactor here -- they go through "
+        "`save_conversation_turn`, which scrubs on behalf of all twelve of its Slack "
+        "callers, so this entry covers the direct append and that helper covers the rest. "
+        "The two assistant appends need no call: `_redact_at_write_boundary` already "
+        "scrubs every role other than `user`, and that exemption is the gap being closed.",
+    ),
+    (
+        "Shared turn persister",
+        "llm_helpers_parts/turn_results.py",
+        "Where `save_conversation_turn` persists a user row on behalf of all twelve of its "
+        "callers, served back to dashboard readers. The prompt the model received is "
+        "already consumed, so only the stored copy is rewritten.",
+    ),
+    (
+        "Task runner persisted rows",
+        "taskrunner_parts/run_reporting.py",
+        "The task's user row written to the conversation log and served back to dashboard "
+        "readers. Same persisted-copy-only rule as the channel persisters.",
+    ),
+    (
+        "Telegram persisted transcript rows",
+        "telegram/dispatch/turn_engine.py",
+        "The inbound user row Telegram writes to the conversation log and mirrors into the "
+        "live dashboard window. No nudge synthetic inbound reaches it -- `binding_key_for` "
+        "honours only `slack:`/`discord:`/`webex:` -- so this covers ordinary inbound text.",
+    ),
+    (
         "Webex delivery",
         "webex/renderer.py",
         "The Webex DELIVERY boundary. Webex renders markdown, so it reassembles a "
@@ -2139,7 +2217,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # can reassemble a credential that scan could not see.
         "imessage/client.py",
         "imessage/transport.py",
-        "imessage/transport_dispatch.py",
         # The WhatsApp turn lifecycle. What the scan matches here is the
         # post-answer redaction NOTICE pair -- ``count_redaction_tags`` over the
         # delivered chunks and ``redaction_notice`` to build the follow-up
@@ -2672,7 +2749,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "slack/gateway_runtime/cron_fire.py",
         "slack/gateway_runtime/heartbeat_turns.py",
         "slack/gateway_runtime/install_repair.py",
-        "slack/gateway_runtime/nudge_channel_fire.py",
         "slack/gateway_runtime/nudge_wiring.py",
         "slack/gateway_runtime/result_egress.py",
         "slack/gateway_runtime/service_boot.py",

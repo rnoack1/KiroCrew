@@ -637,3 +637,42 @@ describe('unconfirmed send treatment', () => {
     expect(line.querySelector('button')).toBeNull()
   })
 })
+
+describe('UserMessage — a rewritten row says so', () => {
+  it('cues a masked row with a plain sentence rather than a log tag', () => {
+    render(
+      <UserMessage
+        content="my key is [REDACTED: credential] ok"
+        redacted
+        renderContent={renderContent}
+      />,
+    )
+    const cue = screen.getByTestId('user-message-redacted')
+    expect(cue).toHaveTextContent('Credential hidden')
+    // The loss must be readable WITHOUT hover: a title is unreachable on touch and by keyboard.
+    expect(cue).toHaveTextContent('original text not saved')
+    expect(cue).not.toHaveAttribute('title')
+    // A masked span is not a failure, so dressing it as an alert would overstate it.
+    expect(cue).not.toHaveAttribute('role')
+  })
+
+  it('cues a withheld row for a dropped message, never for a masked span', () => {
+    render(
+      <UserMessage
+        content="<withheld: redaction unavailable>"
+        redacted
+        renderContent={renderContent}
+      />,
+    )
+    const cue = screen.getByTestId('user-message-redacted')
+    expect(cue).toHaveTextContent('Message not saved')
+    expect(cue).not.toHaveTextContent('Credential hidden')
+    // A withheld body IS a failure outcome, so it owes the error surface, not plain text.
+    expect(cue).toHaveAttribute('role', 'alert')
+  })
+
+  it('leaves a verbatim row uncued', () => {
+    render(<UserMessage content="just my ordinary question" renderContent={renderContent} />)
+    expect(screen.queryByTestId('user-message-redacted')).toBeNull()
+  })
+})

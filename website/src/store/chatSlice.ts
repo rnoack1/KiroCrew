@@ -165,7 +165,7 @@ export const batchedTextAboveFloor = (parts: BatchedChunkPart[], floor: number |
 }
 
 /** One `chat_message` frame as the WebSocket hook hands it to `sseChatMessage`. */
-type ChatFrame = TurnIdentityFields & { slot: string; role: string; content: string; ts?: string; seq?: number; gen?: string; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean; parts?: BatchedChunkPart[] }
+type ChatFrame = TurnIdentityFields & { slot: string; role: string; content: string; ts?: string; seq?: number; gen?: string; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean; parts?: BatchedChunkPart[]; redacted?: boolean }
 
 /**
  * Path B (native session grid): apply a WS chat frame for a NON-active slot
@@ -178,7 +178,7 @@ function applyNonActiveFrame(
   state: ChatState,
   p: ChatFrame,
 ) {
-  const { slot, role, ts, seq, gen, cls, meta, kind, batched, parts } = p
+  const { slot, role, ts, seq, gen, cls, meta, kind, batched, parts, redacted } = p
   let content = p.content
   if (isUnsafeKey(slot)) return  // never index a state map with __proto__/constructor/prototype
   const msgs = (state.slotMessages[safeKey(slot)] ??= [])
@@ -358,7 +358,7 @@ function applyNonActiveFrame(
       }
     }
   }
-  msgs.push(ensureMsgId({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind }))
+  msgs.push(ensureMsgId({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind, ...(redacted ? { redacted: true } : {}) }))
 }
 
 /** The ACTIVE-slot half of `sseChatMessage`, kept apart from the background
@@ -373,7 +373,7 @@ function countLiveFrame(state: ChatState): void {
 }
 
 function applyActiveFrame(state: ChatState, p: ChatFrame): void {
-  const { slot, role, ts, seq, gen, cls, meta, kind, batched, parts } = p
+  const { slot, role, ts, seq, gen, cls, meta, kind, batched, parts, redacted } = p
   let content = p.content
   // stop_event — replace in place by id, or insert new
   const effectiveKind = kind ?? (meta?.kind as string | undefined)
@@ -580,7 +580,7 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
       }
     }
   }
-  state.messages.push(ensureMsgId({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind }))
+  state.messages.push(ensureMsgId({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind, ...(redacted ? { redacted: true } : {}) }))
 }
 
 /** Whether a refused close is the server's "history write still running"

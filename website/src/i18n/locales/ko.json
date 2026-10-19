@@ -11699,6 +11699,8 @@
         "cancel_esc": "취소 (Esc)",
         "copy": "복사",
         "copy_link_to_message": "메시지 링크 복사",
+        "row_redacted": "자격 증명 숨김 · 원본 텍스트 미저장",
+        "row_withheld": "메시지 미저장: 자격 증명 필터를 사용할 수 없음",
         "edit_message": "메시지 편집",
         "edit_resend": "편집 후 다시 보내기",
         "send": "보내기",

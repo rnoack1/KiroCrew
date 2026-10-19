@@ -27,6 +27,12 @@ import { readSteerRecord } from './decisionRecord'
 // persists for the app session — each steered message animates exactly once.
 const animatedSteers = new Set<string>()
 
+// The body a row carries when the host's credential policy would not compose, so the
+// whole message was dropped rather than part of it masked. Mirrors
+// `LOG_WITHHELD_PLACEHOLDER` in `platform/context.py`; a row carrying it needs the cue
+// for a dropped message, not the one for a masked span.
+const WITHHELD_BODY = '<withheld: redaction unavailable>'
+
 interface UserMessageProps {
   content: string
   meta?: Record<string, unknown>
@@ -69,6 +75,9 @@ interface UserMessageProps {
    *  send while the member works is a steer), the badge would label every
    *  such send with the mechanics the surface exists to hide. */
   hideSteerBadge?: boolean
+  /** This stored row is a REWRITE, not what the user typed: a credential scrub replaced a
+   *  span and kept no original, so without the cue a false positive is indistinguishable. */
+  redacted?: boolean
   /** Bubble colour. `default` is the single-chat page's neutral `bg-card`
    *  surface. `accent` fills the bubble with the theme accent and sets its text
    *  to `--accent-fg` — the iMessage pairing a crewmate's chat uses (#17839),
@@ -101,7 +110,7 @@ interface UserMessageProps {
   onJumpToQuote?: (quote: MessageQuote) => void
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, onReplyInThread, slotRunning, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, onReplyInThread, slotRunning, hideSteerBadge, redacted, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
@@ -609,6 +618,14 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           {bubbleWithMenu}
         </>
       )}
+      {/* NOT in the action row below, which is `opacity-0` until this message is
+          hovered: a reveal-on-hover trust signal is no signal. A withheld body is the
+          outcome of a composition FAILURE; a masked span is not, so it stays plain. */}
+      {redacted && (content.includes(WITHHELD_BODY) ? (
+        <ErrorNotice variant="inline" askAgent testId="user-message-redacted" className="mt-1 pr-1" message={i18nT('pages.chat.userMessage.row_withheld')} />
+      ) : (
+        <div data-testid="user-message-redacted" className="text-muted text-[12px] leading-5 mt-1 pr-1">{i18nT('pages.chat.userMessage.row_redacted')}</div>
+      ))}
       {/* Where the pointer cannot hover the footer is always visible and its
           descendant overrides grow every action to a 40px touch target (20px
           icon + 10px padding); hover-capable pointers keep the reveal-on-hover

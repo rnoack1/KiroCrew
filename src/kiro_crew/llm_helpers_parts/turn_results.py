@@ -15,6 +15,8 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.platform.context import redact_log_via_context
+
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
 
@@ -165,7 +167,7 @@ def save_conversation_turn(
     log.append(
         key,
         "user",
-        user_text,
+        redact_log_via_context(user_text),
         source_thread=source_thread,
         source_user=source_user,
         agent=agent,

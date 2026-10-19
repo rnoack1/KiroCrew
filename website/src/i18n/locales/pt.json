@@ -12061,6 +12061,8 @@
         "cancel_esc": "Cancelar (Esc)",
         "copy": "Copiar",
         "copy_link_to_message": "Copiar link da mensagem",
+        "row_redacted": "Credencial ocultada · texto original não salvo",
+        "row_withheld": "Mensagem não salva: filtro de credenciais indisponível",
         "edit_message": "Editar mensagem",
         "edit_resend": "Editar e reenviar",
         "send": "Enviar",

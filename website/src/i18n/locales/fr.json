@@ -12061,6 +12061,8 @@
         "cancel_esc": "Annuler (Esc)",
         "copy": "Copier",
         "copy_link_to_message": "Copier le lien du message",
+        "row_redacted": "Identifiant masqué · texte original non conservé",
+        "row_withheld": "Message non enregistré : filtre d'identifiants indisponible",
         "edit_message": "Modifier le message",
         "edit_resend": "Modifier et renvoyer",
         "send": "Envoyer",

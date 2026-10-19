@@ -651,6 +651,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
         <UserMessage
           content={m.content}
           meta={m.meta}
+          redacted={m.redacted === true}
           timestamp={formatTs(m.ts)}
           timestampTitle={fmtMessageTimeFull(m.ts)}
           renderContent={(c, mt) => renderUserContent({ content: c, meta: mt, onFileOpen: ctx.onFileOpen })}

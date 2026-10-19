@@ -68,6 +68,7 @@ from kiro_crew.messaging.link import (
 )
 from kiro_crew.messaging.queue_drain import entries_queued_by, owner_token
 from kiro_crew.mirror_admission import sign_mirror_admission
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.safety_override import safety_override
 from kiro_crew.session_lifecycle import (
     STOP_DECLINED_COMPACTING_TEXT,
@@ -495,6 +496,7 @@ class WeComDispatcher:
         """Record the turn to conversation_log (dashboard visibility + restart)."""
         if self.conv_log is None:
             return
+        user_text = redact_log_via_context(user_text)
         self.conv_log.append(session_key, "user", user_text, agent=agent, mid=mint_row_mid())
         if reply_text:
             self.conv_log.append(

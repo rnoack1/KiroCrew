@@ -616,6 +616,67 @@ member. The facade grows only in the code listed above as staying there.
 
 Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line is metadata, subsequent lines are messages with `role`, `content`, `ts`, `tools`, `source_thread`, `source_user`. A writer can also supply `cls` (presentation class) and `mid` — persisted as `meta.mid`, the same field shape the dashboard slot save writes, so a dual-write injector's durable copy carries the SAME delivery identity as its in-memory window copy and a bounded slot-detail read reconciles the two as one message instead of re-appending the injection. A writer may also pass `extra_meta` (`append` / `append_if_absent`), a dict of display fields merged into the row's `meta` — e.g. `{"turn_stats": …}` for the usage footer; the merge never overrides `mid` (`{**extra_meta, **{"mid": …}}`). The multi-row off-loop writer `append_rows_if_absent_off_loop` takes `row_meta`, a sequence aligned with its `rows` by index, applying each entry as that row's `extra_meta`. A row appended with neither `mid` nor a non-empty `extra_meta` carries no `meta` at all (the pre-id shape readers keep an id-less fallback for; existing transcripts are never migrated); supplying `extra_meta` alone writes a `meta` dict even without a `mid`.
 
+**Write-boundary redaction, and its one-way door.** Every row whose `role` is not `user` is
+scrubbed by `_redact_at_write_boundary` on its way into the transcript, so the rule lives
+where the bytes are written rather than in either caller — a conversation's dashboard tab and
+its channel thread persist through different paths to the same file. Inbound `user` text is
+scrubbed by the persisters BEFORE they call in, an interim split enforced by a test
+(`TestEveryUserRowPersisterScrubs`), with the dashboard write-back the one surface still
+relying on the exemption. A rewritten row carries `redacted: true` on the live wire and on
+disk, and the dashboard renders a cue from it. The mark is RECORDED where the rewrite
+happened; only the write boundary derives it from the stored text, because a `user` row's
+rewrite happened in its caller so it holds no original to compare. A site that stores its
+author's words verbatim never derives it: a typed tag is not a rewrite.
+
+The redaction is NOT reversible: the original span is not retained, so a false positive
+rewrites a user's own text at rest permanently and a later pattern fix cannot restore it.
+That is the accepted cost of the sink-side rule.
+
+**Flipping the `role == "user"` exemption is the smaller shape on paper, and it was measured
+rather than argued about.** Removing the early return makes `append` scrub every role, one
+edit covering every present and future persister instead of a rule repeated in each caller --
+the reason to want it. It is not free: with the exemption removed,
+`test_history_consolidation_retry.py` and `test_history_locking_remediation.py` go from 152
+passing in under six seconds to four hard timeouts above 120 seconds each, in the rotation,
+consolidation-retry and locking-remediation paths.
+
+**The cause is quadratic backtracking, and NOT in the pre-filter this once blamed.** On a
+long run of one repeated character, `_CREDENTIAL_PATTERNS` grows quadratically: 4.7 ms at
+2 kB, 74 at 8 kB, 293 at 16 kB, 1169 at 32 kB. `_might_contain_credential` GATES that
+alternation and is flat on the same input (0.03 ms at 2 kB, 0.32 at 32 kB), returning False,
+so this boundary's own pair costs 2.4 ms on a 32 kB uniform run and scales linearly. An
+earlier revision of this section attributed the quadratic figures to the pre-filter by name;
+they belong to the alternation, which a pure digit run never reaches.
+
+So the shape that times out must reach the alternation, and the rotation fixtures' timeouts
+need re-attributing before the `user` exemption can be called blocked. Until that is done
+this stands as a DEFERRAL whose measurement is known to be MIS-ATTRIBUTED, not a judgement
+that the caller-side shape is better; `TestEveryUserRowPersisterScrubs` records this same
+reason, so the two cannot drift apart.
+
+Two consequences follow while it stands. The dashboard slot save does not route through this
+boundary at all — it builds its rows in `chat_persistence` and writes them itself — so a
+typed dashboard row is unaffected either way. And the channel-side call sites are not pure
+duplication: each transport feeds the same inbound string to `set_title`, so deleting one as
+newly redundant would leave the row clean and put the credential in the session title.
+
+**Serve-time scrubbing was evaluated as the alternative, and rejected.** Storing the row
+verbatim and scrubbing on the way out would keep the user's own words recoverable, the one
+real advantage and the reason it was considered. Rejected on three grounds, all properties
+of this file rather than preferences. First, the transcript at rest IS an egress: the JSONL
+sits on the host, is carried by whatever backs that directory up, and is read by the search
+index, so storing a credential verbatim defers the exposure instead of removing it, and the
+threat this rule exists for is the copy that outlives the conversation. Second, it moves the
+rule from a few writers to MANY more readers -- `read_messages`, `read_messages_chained`,
+`recent`, `recent_with_provenance`, `search_sessions`, the snippet builders, the archive
+endpoints -- which is the same "rule lives in each caller" weakness reviewers name against
+the write side, relocated to the side with more callers. Third, the memos above
+(`_folded_cache`, `_snippet_cache`, `_msg_cache`) are filled from the stored bytes and keyed
+by mtime, so a read-side scrub is bypassed by any warm entry. The residual cost of the write
+side is the irreversible false positive, which nothing undoes: the row cue (`row_redacted`)
+tells the reader a credential was hidden and that the original text was not saved. A row
+withheld whole carries `row_withheld` instead, which names that cause rather than a mask.
+
 - Append-only for LLM cache efficiency
 - Rotation at 10MB (keeps metadata + last 200 messages, atomic write), enforced
   by `ConversationLog.append`. The dashboard whole-file save

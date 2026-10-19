@@ -252,6 +252,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.permission_floor import (  # noqa: F401
         OUTCOME_REJECTED_TRANSPORT_FLOOR,
     )
+    from kiro_crew.platform.context import redact_log_via_context  # noqa: F401
     from kiro_crew.platform.tool_paths import WRITE_PLANE_KINDS as _WRITE_PLANE_KINDS  # noqa: F401
     from kiro_crew.platform.tool_paths import (  # noqa: F401
         command_shaped_strings,

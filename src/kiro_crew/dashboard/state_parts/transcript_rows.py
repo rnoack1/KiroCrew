@@ -95,6 +95,9 @@ def chat_message_frame(note: dict, *, include_metadata: bool) -> dict[str, Any]:
         "content": note["content"],
         "ts": note.get("ts", ""),
     }
+    # Above the metadata gate: a display boolean, not privileged meta.
+    if note.get("redacted"):
+        frame["redacted"] = True
     if not include_metadata:
         return frame
     if note.get("cls"):
@@ -202,6 +205,10 @@ def chat_message_note(slot_key: str, msg: dict, *, workspace: str | None) -> dic
         "content": content,
         "ts": msg.get("ts", ""),
     }
+    # Read off the ROW, not re-derived from `content`: display redaction masks
+    # model output at render time, so a body-derived mark would false-positive.
+    if msg.get("redacted"):
+        payload["redacted"] = True
     # Include cls for backward compatibility
     cls_val = msg.get("cls", "")
     if cls_val:

@@ -11699,6 +11699,8 @@
         "cancel_esc": "取消 (Esc)",
         "copy": "复制",
         "copy_link_to_message": "复制消息链接",
+        "row_redacted": "凭据已隐藏 · 原文未保存",
+        "row_withheld": "消息未保存：凭据过滤器不可用",
         "edit_message": "编辑消息",
         "edit_resend": "编辑并重发",
         "send": "发送",

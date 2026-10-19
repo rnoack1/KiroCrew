@@ -6790,6 +6790,8 @@
         "cancel_esc": "Cancel (Esc)",
         "copy": "Copy",
         "copy_link_to_message": "Copy link to message",
+        "row_redacted": "Credential hidden · original text not saved",
+        "row_withheld": "Message not saved: credential filter unavailable",
         "edit_message": "Edit message",
         "edit_resend": "Edit & Resend",
         "send": "Send",

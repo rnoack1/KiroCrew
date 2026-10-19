@@ -1210,6 +1210,28 @@ def redact_code_via_context(text: str) -> str:
 LOG_WITHHELD_PLACEHOLDER = "<withheld: redaction unavailable>"
 
 
+def carries_redaction_marker(text: object) -> bool:
+    """True when *text* carries a redaction tag, so the row holding it is a REWRITE.
+
+    For the write boundary ONLY. There a user row's rewrite happened in its CALLER, so
+    the boundary has no original to compare and the stored text is the only evidence
+    left. Every other site records the mark where the rewrite happened: deriving it from
+    text where the author's words are stored verbatim claims a rewrite that never
+    occurred. A non-string reads unmarked -- the tally below raises on one.
+
+    That tally is :func:`count_redaction_tags`, the one shared counter over the
+    redactors' registries, imported in-call because it reaches back into this module.
+    """
+    if not isinstance(text, str) or not text:
+        return False
+    if LOG_WITHHELD_PLACEHOLDER in text:
+        return True
+    from kiro_crew.messaging.renderer import count_redaction_tags
+
+    cred_count, url_count = count_redaction_tags(text)
+    return bool(cred_count or url_count)
+
+
 def redact_log_via_context(text: str) -> str:
     """Context-aware redaction for an operational LOG line, which must not raise.
 

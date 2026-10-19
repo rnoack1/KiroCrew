@@ -24,6 +24,7 @@ from kiro_crew.config.memory_sections import lesson_extraction_enabled
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.learn import Lesson
 from kiro_crew.llm_helpers import stream_and_collect_json
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.session import BACKGROUND_KEY
 from kiro_crew.task_models import Project, Task
 from kiro_crew.task_reporter import notify
@@ -61,7 +62,7 @@ def _log_task(self: TaskRunner, history_key: str, run: Project, task: Task) -> N
         # two independent append_off_loop dispatches could interleave on the
         # default executor and reorder the transcript — and take the patient
         # off-loop cross-process lock acquire path.
-        log.append(history_key, "user", user_msg)
+        log.append(history_key, "user", redact_log_via_context(user_msg))
         log.append(history_key, "assistant", result_summary)
 
     # _log_task is invoked from async task_executor code running ON the

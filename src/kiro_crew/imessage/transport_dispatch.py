@@ -54,6 +54,7 @@ from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.messaging.pre_turn import resolve_pre_turn
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.safety_override import safety_override
 from kiro_crew.start_priority import person_priority
 
@@ -376,6 +377,8 @@ class IMessageDispatcher:
         """
         if self.conv_log is None:
             return
+        # This row is an EGRESS: persisted, then served to dashboard readers.
+        user_text = redact_log_via_context(user_text)
         self.conv_log.append(session_key, "user", user_text, agent=agent, mid=mint_row_mid())
         if reply_text:
             self.conv_log.append(
