@@ -1597,7 +1597,14 @@ class ScriptHook:
             command=data.get("command", ""),
             skills=[str(s) for s in skills if isinstance(s, str)],
             timeout=timeout,
-            enabled=data.get("enabled", True),
+            # A row is armed only if its stored value plainly says on. `hooks.json`
+            # is hand-editable and `bool("false")` is True, so reading the field
+            # raw armed a row written `"enabled": "false"`. The default must be
+            # False, not True: reading it raw also left `null`, `0` and `""` falsy,
+            # and a default of True would arm those, running a command an operator
+            # had switched off. An absent key is unaffected either way, because
+            # `data.get` supplies a real bool that `_coerce_bool` returns as-is.
+            enabled=_coerce_bool(data.get("enabled", True), default=False),
             last_run=data.get("last_run", 0.0),
             last_status=data.get("last_status", ""),
             last_error=last_error,
