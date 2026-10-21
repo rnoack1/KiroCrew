@@ -7,7 +7,8 @@ bookkeeping, deferred resets, eager spawn and the MCP report.
 
 Instance fields of ``_ChatSlot`` this module reads and writes:
 
-Writes: ``_app``, ``_auto_tagged``, ``_channel_runtime_origin``, ``_created_by``,
+Writes: ``_app``, ``_auto_tagged``, ``_channel_runtime_origin``, ``_closes_in_flight``,
+``_created_by``,
 ``_created_by_sid``, ``_crew_log_opened_sid``, ``_crew_log_pending_channel``,
 ``_crew_log_previous_from_mapping``, ``_crew_log_previous_sid``,
 ``_crew_log_previous_undecided``, ``_detail_render_lock``, ``_eager_spawn_failures``,
@@ -24,7 +25,8 @@ Writes: ``_app``, ``_auto_tagged``, ``_channel_runtime_origin``, ``_created_by``
 ``_title_low_signal``, ``_title_origin``, ``_title_refresh_mark``,
 ``_title_retry_pending``, ``_title_task``, ``_titled``, ``_turn_timeout_hydrated``,
 ``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``autocompact_pct``,
-``channel_origin``, ``created_at``, ``executor``, ``forked_from``, ``instance_id``,
+``channel_origin``, ``created_at``, ``executor``, ``forked_from``, ``incarnation``,
+``instance_id``,
 ``jev_route``, ``memory_store``, ``project``, ``recovery_retrigger_count``,
 ``remote_slot``, ``served_model``, ``turn_timeout_secs``.
 Reads only: ``model``.
@@ -38,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -224,6 +227,10 @@ def init_session_fields(self: _ChatSlot) -> None:
     self.instance_id = ""
     self.remote_slot = ""
     self.created_at = datetime.now(timezone.utc).isoformat()
+    # Identity of THIS live object. Four paths restore ``created_at`` from persisted
+    # metadata, so a resumed slot cannot be told apart by it.
+    self.incarnation = uuid.uuid4().hex
+    self._closes_in_flight = 0
     self._titled = False  # True once a title has been assigned
     # Provenance of the current title: "auto" (LLM auto-titler or its
     # fallback) or "user" (manual rename). Governs the background title

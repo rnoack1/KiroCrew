@@ -238,10 +238,12 @@ from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _await_guarded_history_write,
     _close_slot,
     _NudgeRetireFailed,
+    _overlapping_close,
     _pending_guarded_history_writes,
     _release_closed_execution,
     _restore_slot_nudge_loop,
     _retire_slot_nudge_loop,
+    _slot_present_and_ours,
     _slot_still_ours,
     api_chat_slot_delete,
     api_chat_slot_reset_conversation,
@@ -883,13 +885,23 @@ class SlotCloseError(Exception):
     ``code`` is the machine-readable contract; ``message`` is advisory prose;
     ``status`` is 500 for every close failure (each leaves the tab open and
     every partial step rolled back — a state the user can see and retry).
+
+    ``definitive`` says the ORIGINAL slot is provably still there — the raise happened
+    before the pop, or the save-failure arm restored it — so a retry can only reach the
+    session the caller meant. It defaults to False because a HANDOVER, where the key was
+    re-minted onto a replacement while this close tore the original down, leaves the
+    outcome unknowable: the original is gone, nothing rolled back, and inviting a retry
+    would aim a second close at the replacement and discard its live turn.
     """
 
-    def __init__(self, message: str, code: str, status: int = 500) -> None:
+    def __init__(
+        self, message: str, code: str, status: int = 500, definitive: bool = False
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.code = code
         self.status = status
+        self.definitive = definitive
 
 
 # Ceiling on how long a close waits for this slot's guarded history writes to

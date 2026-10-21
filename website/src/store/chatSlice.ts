@@ -657,7 +657,7 @@ export const deleteSlot = createAsyncThunk<
     // so it completes the close instead of failing it.
     let alreadyGone = false
     try {
-      await api.deleteChatSlot(key).catch((err: unknown) => {
+      await api.deleteChatSlot(key, deletedSlot?.incarnation).catch((err: unknown) => {
         if (!isNotFoundError(err)) throw err
         alreadyGone = true
       })
@@ -680,7 +680,9 @@ export const deleteSlot = createAsyncThunk<
         // `await navigation` below, and a peer transcript load that outlasts the
         // in-flight cap would otherwise expire a hold whose close succeeded.
         dispatch(confirmCloseHold({ key, requestId }))
-        gcSessionStorage(key)
+        // Only erase browser state when the close named the instance it meant: a
+        // replacement shares the key, so an unnamed close would take its state.
+        if (deletedSlot?.incarnation) gcSessionStorage(key)
       }
     } catch (err) {
       // Release the close hold BEFORE refetching: this thunk's `rejected` (which
